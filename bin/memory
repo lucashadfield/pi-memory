@@ -311,7 +311,7 @@ def cmd_dream(conn, args):
     """Print the consolidation instructions, with this instance's paths and
     budgets substituted in. The schedule prompt is one line that points here,
     so the instructions can change without touching paseo config."""
-    template = (memlib.REPO_DIR / "prompts" / "dream.md").read_text()
+    template = (memlib.REPO_DIR / "prompts" / "dream.md.j2").read_text()
     occ = memlib.occupancy(conn)
     subs = {
         "repo_dir": str(memlib.REPO_DIR),
@@ -324,7 +324,7 @@ def cmd_dream(conn, args):
         "over_budget": "yes" if occ["over_total"] else "no",
         "next_to_squeeze": str(occ["next_to_squeeze"]),
     }
-    out = memlib.substitute(template, subs)
+    out = memlib.substitute(template, subs).strip()
     if args.json:
         emit({"ok": True, "instructions": out}, True)
     else:

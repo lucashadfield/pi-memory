@@ -239,20 +239,38 @@ def pending_thoughts(conn, state="pending", limit=None):
 # render: the injected block
 # --------------------------------------------------------------------------
 
-def _preamble_path() -> Path:
-    return REPO_DIR / "prompts" / "inject.md"
+def _inject_template_path() -> Path:
+    return REPO_DIR / "prompts" / "inject.md.j2"
+
+
+def _dream_template_path() -> Path:
+    return REPO_DIR / "prompts" / "dream.md.j2"
 
 
 # The slot the entries are substituted into. The block injected at session start
-# is one editable file, prompts/inject.md, so the policy text and the store's
-# layout can be changed without touching code — and the same file is what the
-# viewer's Prompt tab shows.
+# is one editable template, prompts/inject.md.j2, so the policy text and the
+# store's layout can be changed without touching code — and the same content is
+# what the viewer's Prompt tab shows.
+#
+# The templates carry a .j2 extension deliberately: they are input to a renderer,
+# not documents. An agent that finds a .md file reads it as prose meant for it.
 MEMORIES_SLOT = "{{memories}}"
+
+# Jinja-style comments, stripped before substitution. They let a template explain
+# itself — which script renders it, which placeholders exist — without that
+# explanation ending up in a prompt sent to a model.
+COMMENT_RE = re.compile(r"\{#.*?#\}", re.S)
+
+
+def strip_comments(text: str) -> str:
+    return COMMENT_RE.sub("", text)
 
 
 def substitute(text: str, values: dict) -> str:
-    """Fill {{placeholders}}. Shared by the injected block and the consolidation
-    instructions, so there is one substitution convention in the system."""
+    """Fill {{placeholders}} and drop {# comments #}. Shared by the injected block
+    and the consolidation instructions, so the system has one substitution
+    convention rather than two."""
+    text = strip_comments(text)
     for key, value in values.items():
         text = text.replace("{{" + key + "}}", value)
     return text
@@ -267,14 +285,14 @@ def entry_line(conn, row) -> str:
 def render(conn, session_id=None, truncate=True):
     """Build the block injected at the start of a session.
 
-    Returns (block, ids, tokens). The block is prompts/inject.md with every live
-    memory at its current level substituted into {{memories}}, in `position`
+    Returns (block, ids, tokens). The block is prompts/inject.md.j2 with every
+    live memory at its current level substituted into {{memories}}, in `position`
     order. Selection is still "everything" by design: the store is small and the
     whole point of the level ladder is that unused entries are cheaper, not that
     they are withheld. Ranking, if it ever comes, is a separate change with its
     own measurement.
     """
-    template = _preamble_path().read_text().strip()
+    template = strip_comments(_inject_template_path().read_text()).strip()
     rows = conn.execute(
         "SELECT * FROM memories WHERE state = 'active' ORDER BY position ASC, id ASC"
     ).fetchall()
@@ -450,18 +468,18 @@ def verify(conn):
     ):
         problems.append(f"exposure for unknown memory {e['memory_id']}")
 
-    # The injected block is built from prompts/inject.md. If the slot the entries
-    # are substituted into is missing, every session silently loses the entire
-    # store — a worse failure than any data problem under this function, and an
-    # invisible one, so it is checked here.
+    # The injected block is built from prompts/inject.md.j2. If the slot the
+    # entries are substituted into is missing, every session silently loses the
+    # entire store — a worse failure than any data problem under this function,
+    # and an invisible one, so it is checked here.
     try:
-        template = _preamble_path().read_text()
+        template = strip_comments(_inject_template_path().read_text())
         if MEMORIES_SLOT not in template:
             problems.append(
-                f"{_preamble_path().name}: missing {MEMORIES_SLOT} — memories would not"
-                f" be injected at all")
+                f"{_inject_template_path().name}: missing {MEMORIES_SLOT} — memories"
+                f" would not be injected at all")
     except OSError as exc:
-        problems.append(f"{_preamble_path()}: unreadable ({exc})")
+        problems.append(f"{_inject_template_path()}: unreadable ({exc})")
 
     # The two tools' wording lives in tools.json. A malformed file is not fatal —
     # the extension falls back to built-in text — but it means the agent is being

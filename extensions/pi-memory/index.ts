@@ -22,7 +22,7 @@
  * Where the wording lives, because there are two injected surfaces and they must
  * not diverge:
  *
- *   prompts/inject.md   the policy — when and why to call these tools. One file,
+ *   prompts/inject.md.j2   the policy — when and why to call these tools. One file,
  *                       editable without touching code, substituted with the
  *                       entries at {{memories}}. Authoritative: it is what every
  *                       session of every user gets.
@@ -30,7 +30,7 @@
  *                       attached to the tool definitions where the model looks
  *                       when deciding to use one.
  *
- * Change policy in inject.md. Only change these descriptions when what the tool
+ * Change policy in inject.md.j2. Only change these descriptions when what the tool
  * does changes.
  *
  *   memory render --session <id>   → the block injected at session start
@@ -56,7 +56,7 @@ const execFileAsync = promisify(execFile);
 // resolves however pi loads the extension.
 //
 // These definitions say what each tool is and how to call it. They deliberately
-// do not say when to call it: that policy is prompts/inject.md, injected into
+// do not say when to call it: that policy is prompts/inject.md.j2, injected into
 // every session, and it is the only place it should live.
 
 type ToolText = {

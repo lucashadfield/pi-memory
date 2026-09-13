@@ -1,5 +1,5 @@
 {
-  "_comment": "Tool definitions: what each tool is and how to call it. Deliberately not when to call them — that policy is prompts/inject.md, which is injected into every session and is the only place it should live. This file is adjacent to the extension rather than in prompts/ because the extension is its only reader, and sitting next to index.ts guarantees the path resolves however pi loads the module.",
+  "_comment": "Tool definitions: what each tool is and how to call it. Deliberately not when to call them — that policy is prompts/inject.md.j2, which is injected into every session and is the only place it should live. This file is adjacent to the extension rather than in prompts/ because the extension is its only reader, and sitting next to index.ts guarantees the path resolves however pi loads the module.",
 
   "remember": {
     "promptSnippet": "Record a durable observation about the user or project for a future session",

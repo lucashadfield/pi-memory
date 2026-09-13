@@ -298,9 +298,9 @@ class TestRender(Base):
         self.assertEqual(occ["decayable_chars"], expected)
 
     def test_the_block_is_a_template_with_an_entries_slot(self):
-        """prompts/inject.md is the whole block, with {{memories}} where the
+        """prompts/inject.md.j2 is the whole block, with {{memories}} where the
         entries go, so the policy text and the layout are one editable file."""
-        template = memlib._preamble_path().read_text()
+        template = memlib._inject_template_path().read_text()
         self.assertIn(memlib.MEMORIES_SLOT, template)
         mid = self.grad("a specific fact")
         block, ids, _ = memlib.render(self.conn)
@@ -424,14 +424,14 @@ class TestToolDefinitions(Base):
 
     def test_descriptions_do_not_carry_the_policy(self):
         """What a tool is and how to call it belongs here. When to call it is
-        prompts/inject.md, and duplicating it in two injected surfaces is how the
+        prompts/inject.md.j2, and duplicating it in two injected surfaces is how the
         two drift apart."""
         import json
         tools = json.loads((memlib.REPO_DIR / "extensions" / "pi-memory" / "tools.json").read_text())
         remember = " ".join(tools["remember"]["description"]).lower()
         for phrase in ("at the start of a turn", "before other work", "after answering a question"):
             self.assertNotIn(phrase, remember)
-        prose = (memlib._preamble_path().read_text()).lower()
+        prose = (memlib._inject_template_path().read_text()).lower()
         self.assertIn("at the start of a turn", prose)  # the policy, in one place
 
     def test_verify_reports_broken_tool_definitions(self):
@@ -503,3 +503,38 @@ class TestExtensionLoads(Base):
         file = _json.loads((entry.parent / "tools.json").read_text())
         for name in ("remember", "recall"):
             self.assertEqual(wired[name], "\n".join(file[name]["description"]))
+
+
+class TestTemplates(Base):
+    """The templates are input to a renderer, not documents. The .j2 extension is
+    the signal an agent needs to stop treating them as prose, and the {# #}
+    comments are how a template explains itself without that explanation reaching
+    a model."""
+
+    def test_both_templates_use_the_j2_extension(self):
+        for path in (memlib._inject_template_path(), memlib._dream_template_path()):
+            self.assertTrue(str(path).endswith(".j2"), path)
+            self.assertTrue(path.exists(), f"{path} is missing")
+
+    def test_the_inject_template_documents_itself(self):
+        raw = memlib._inject_template_path().read_text()
+        self.assertIn("{#", raw)          # explains what it is
+        self.assertIn(memlib.MEMORIES_SLOT, raw)
+
+    def test_comments_never_reach_the_prompt(self):
+        """A comment that leaked would be permanent tokens in every session."""
+        self.grad("a fact")
+        block, _, _ = memlib.render(self.conn)
+        self.assertNotIn("{#", block)
+        self.assertNotIn("#}", block)
+        self.assertTrue(block.startswith("# Memory"), block[:40])
+
+    def test_dream_instructions_are_comment_free(self):
+        out = memlib.substitute(
+            memlib._dream_template_path().read_text(), {"total_tokens": "5000"})
+        self.assertNotIn("{#", out)
+        self.assertTrue(out.lstrip().startswith("# Consolidation"))
+
+    def test_strip_comments_handles_multiline_and_leaves_placeholders(self):
+        self.assertEqual(memlib.strip_comments("a{# one\ntwo #}b"), "ab")
+        self.assertEqual(memlib.strip_comments("x {{memories}} y"), "x {{memories}} y")

@@ -69,7 +69,7 @@ paseo schedule create 'Run `memory dream` and follow the instructions it prints.
   --name dream --cron '0 3 * * *' --timezone Australia/Sydney --provider pi --cwd ~/pi-memory
 ```
 
-The schedule holds one line that points at `prompts/dream.md` in this repository.
+The schedule holds one line that points at `prompts/dream.md.j2` in this repository.
 The consolidation procedure is therefore versioned with the code and reviewable
 in a diff, instead of living in a scheduler's configuration blob.
 
