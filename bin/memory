@@ -314,19 +314,17 @@ def cmd_dream(conn, args):
     template = (memlib.REPO_DIR / "prompts" / "dream.md").read_text()
     occ = memlib.occupancy(conn)
     subs = {
-        "{{repo_dir}}": str(memlib.REPO_DIR),
-        "{{instance_dir}}": str(memlib.instance_dir()),
-        "{{db}}": str(memlib.db_path()),
-        "{{cli}}": str(Path(__file__).resolve()),
-        "{{total_tokens}}": str(int(memlib.cfg(conn, "total_tokens", float))),
-        "{{core_tokens}}": str(int(memlib.cfg(conn, "core_tokens", float))),
-        "{{inject_max_tokens}}": str(int(memlib.cfg(conn, "inject_max_tokens", float))),
-        "{{over_budget}}": "yes" if occ["over_total"] else "no",
-        "{{next_to_squeeze}}": str(occ["next_to_squeeze"]),
+        "repo_dir": str(memlib.REPO_DIR),
+        "instance_dir": str(memlib.instance_dir()),
+        "db": str(memlib.db_path()),
+        "cli": str(Path(__file__).resolve()),
+        "total_tokens": str(int(memlib.cfg(conn, "total_tokens", float))),
+        "core_tokens": str(int(memlib.cfg(conn, "core_tokens", float))),
+        "inject_max_tokens": str(int(memlib.cfg(conn, "inject_max_tokens", float))),
+        "over_budget": "yes" if occ["over_total"] else "no",
+        "next_to_squeeze": str(occ["next_to_squeeze"]),
     }
-    out = template
-    for k, v in subs.items():
-        out = out.replace(k, v)
+    out = memlib.substitute(template, subs)
     if args.json:
         emit({"ok": True, "instructions": out}, True)
     else:

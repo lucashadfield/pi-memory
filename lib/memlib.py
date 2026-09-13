@@ -243,6 +243,21 @@ def _preamble_path() -> Path:
     return REPO_DIR / "prompts" / "inject.md"
 
 
+# The slot the entries are substituted into. The block injected at session start
+# is one editable file, prompts/inject.md, so the policy text and the store's
+# layout can be changed without touching code — and the same file is what the
+# viewer's Prompt tab shows.
+MEMORIES_SLOT = "{{memories}}"
+
+
+def substitute(text: str, values: dict) -> str:
+    """Fill {{placeholders}}. Shared by the injected block and the consolidation
+    instructions, so there is one substitution convention in the system."""
+    for key, value in values.items():
+        text = text.replace("{{" + key + "}}", value)
+    return text
+
+
 def entry_line(conn, row) -> str:
     v = version_at_level(conn, row["id"], row["level"])
     text = v["text"] if v else "(no text on file)"
@@ -252,36 +267,51 @@ def entry_line(conn, row) -> str:
 def render(conn, session_id=None, truncate=True):
     """Build the block injected at the start of a session.
 
-    Returns (block, ids, tokens). The block is the preamble from
-    prompts/inject.md followed by every live memory at its current level, in
-    `position` order. Selection is still "everything" by design: the store is
-    small and the whole point of the level ladder is that unused entries are
-    cheaper, not that they are withheld. Ranking, if it ever comes, is a
-    separate change with its own measurement.
+    Returns (block, ids, tokens). The block is prompts/inject.md with every live
+    memory at its current level substituted into {{memories}}, in `position`
+    order. Selection is still "everything" by design: the store is small and the
+    whole point of the level ladder is that unused entries are cheaper, not that
+    they are withheld. Ranking, if it ever comes, is a separate change with its
+    own measurement.
     """
-    preamble = _preamble_path().read_text().strip()
+    template = _preamble_path().read_text().strip()
     rows = conn.execute(
         "SELECT * FROM memories WHERE state = 'active' ORDER BY position ASC, id ASC"
     ).fetchall()
     lines = [entry_line(conn, r) for r in rows]
-    body = "\n".join(lines)
-    block = f"{preamble}\n\n{body}" if body else preamble
 
-    if truncate:
-        max_chars = tokens_to_chars(int(cfg(conn, "inject_max_tokens", float)),
-                                    cfg(conn, "chars_per_token"))
-        if len(block) > max_chars:
-            # Cut at an entry boundary, never mid-entry. The old renderer sliced
-            # the string at a character offset, which could hand the agent half
-            # a memory.
-            kept, total = [], 0
-            for ln in lines:
-                if total + len(ln) + 1 > max_chars:
-                    break
-                kept.append(ln)
-                total += len(ln) + 1
-            block = f"{preamble}\n\n" + "\n".join(kept) + "\n[truncated]"
-            lines = kept
+    def compose(entry_lines, truncated=False):
+        body = "\n".join(entry_lines)
+        if truncated:
+            body = f"{body}\n[truncated]" if body else "[truncated]"
+        if MEMORIES_SLOT in template:
+            return substitute(template, {"memories": body}).strip()
+        # A template with no slot would drop the entire store from every session
+        # without erroring, so append instead of losing it. `memory verify`
+        # reports this as a fault, because that is what it is.
+        return (template + (f"\n\n{body}" if body else "")).strip()
+
+    if not truncate:
+        return compose(lines), [r["id"] for r in rows], estimate_tokens(
+            len(compose(lines)), cfg(conn, "chars_per_token"))
+
+    max_chars = tokens_to_chars(int(cfg(conn, "inject_max_tokens", float)),
+                                cfg(conn, "chars_per_token"))
+    if len(compose(lines)) <= max_chars:
+        block = compose(lines)
+    else:
+        # Cut at an entry boundary, never mid-entry. The old renderer sliced the
+        # string at a character offset, which could hand the agent half a memory.
+        overhead = len(template) - len(MEMORIES_SLOT) + len("\n[truncated]")
+        budget = max(0, max_chars - overhead)
+        kept, total = [], 0
+        for ln in lines:
+            if total + len(ln) + 1 > budget:
+                break
+            kept.append(ln)
+            total += len(ln) + 1
+        lines = kept
+        block = compose(kept, truncated=True)
 
     ids = [r["id"] for r in rows][: len(lines)]
     return block, ids, estimate_tokens(len(block), cfg(conn, "chars_per_token"))
@@ -419,6 +449,19 @@ def verify(conn):
         " LEFT JOIN memories m ON m.id = e.memory_id WHERE m.id IS NULL"
     ):
         problems.append(f"exposure for unknown memory {e['memory_id']}")
+
+    # The injected block is built from prompts/inject.md. If the slot the entries
+    # are substituted into is missing, every session silently loses the entire
+    # store — a worse failure than any data problem under this function, and an
+    # invisible one, so it is checked here.
+    try:
+        template = _preamble_path().read_text()
+        if MEMORIES_SLOT not in template:
+            problems.append(
+                f"{_preamble_path().name}: missing {MEMORIES_SLOT} — memories would not"
+                f" be injected at all")
+    except OSError as exc:
+        problems.append(f"{_preamble_path()}: unreadable ({exc})")
 
     return problems
 

@@ -19,6 +19,20 @@
  * exactly like a session that had none to begin with, and that ambiguity has
  * hidden real faults before.
  *
+ * Where the wording lives, because there are two injected surfaces and they must
+ * not diverge:
+ *
+ *   prompts/inject.md   the policy — when and why to call these tools. One file,
+ *                       editable without touching code, substituted with the
+ *                       entries at {{memories}}. Authoritative: it is what every
+ *                       session of every user gets.
+ *   this file           mechanism — what each tool does and how to call it,
+ *                       attached to the tool definitions where the model looks
+ *                       when deciding to use one.
+ *
+ * Change policy in inject.md. Only change these descriptions when what the tool
+ * does changes.
+ *
  *   memory render --session <id>   → the block injected at session start
  *   memory remember --text ...     → a raw observation, queued for the dream
  *   memory recall <id> --session … → full-resolution text, plus a vote

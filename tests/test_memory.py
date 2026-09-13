@@ -297,6 +297,27 @@ class TestRender(Base):
         expected = len(f"- [{mid}] ") + 1000
         self.assertEqual(occ["decayable_chars"], expected)
 
+    def test_the_block_is_a_template_with_an_entries_slot(self):
+        """prompts/inject.md is the whole block, with {{memories}} where the
+        entries go, so the policy text and the layout are one editable file."""
+        template = memlib._preamble_path().read_text()
+        self.assertIn(memlib.MEMORIES_SLOT, template)
+        mid = self.grad("a specific fact")
+        block, ids, _ = memlib.render(self.conn)
+        self.assertIn("a specific fact", block)
+        self.assertNotIn(memlib.MEMORIES_SLOT, block)
+        self.assertIn("# Memory", block)
+        self.assertIn(mid, ids)
+
+    def test_verify_reports_a_template_without_the_slot(self):
+        """Without the slot every session silently loses the store, so it is a
+        fault rather than a silent append."""
+        import unittest.mock as mock
+        self.grad()
+        with mock.patch.object(memlib.Path, "read_text", return_value="# Memory\n\nno slot here"):
+            problems = memlib.verify(self.conn)
+        self.assertTrue(any(memlib.MEMORIES_SLOT in p for p in problems), problems)
+
     def test_truncates_at_an_entry_boundary(self):
         for i in range(200):
             self.grad("y" * 400 + f" #{i}")
