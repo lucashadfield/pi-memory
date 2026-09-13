@@ -463,6 +463,27 @@ def verify(conn):
     except OSError as exc:
         problems.append(f"{_preamble_path()}: unreadable ({exc})")
 
+    # The two tools' wording lives in tools.json. A malformed file is not fatal —
+    # the extension falls back to built-in text — but it means the agent is being
+    # told how to record memories by a fallback nobody chose, which is the kind of
+    # quiet degradation that only shows up months later in the quality of what got
+    # recorded. Checked here so there is an offline way to catch it.
+    tools_path = REPO_DIR / "extensions" / "pi-memory" / "tools.json"
+    try:
+        tools = json.loads(tools_path.read_text())
+        for name in ("remember", "recall"):
+            entry = tools.get(name) or {}
+            if not entry.get("promptSnippet"):
+                problems.append(f"tools.json: {name} has no promptSnippet")
+            if not isinstance(entry.get("description"), list) or not entry["description"]:
+                problems.append(f"tools.json: {name} has no description")
+            if not isinstance(entry.get("parameters"), dict) or not entry["parameters"]:
+                problems.append(f"tools.json: {name} has no parameter descriptions")
+    except OSError as exc:
+        problems.append(f"tools.json: unreadable ({exc})")
+    except ValueError as exc:
+        problems.append(f"tools.json: does not parse ({exc})")
+
     return problems
 
 

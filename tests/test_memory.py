@@ -405,3 +405,101 @@ class TestAuditTrail(Base):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestToolDefinitions(Base):
+    """The tools' wording is data, not code, so it can be reviewed and changed
+    without editing TypeScript. These tests hold the file to its contract."""
+
+    def test_tools_json_parses_with_the_required_keys(self):
+        import json
+        path = memlib.REPO_DIR / "extensions" / "pi-memory" / "tools.json"
+        tools = json.loads(path.read_text())
+        for name in ("remember", "recall"):
+            self.assertIn(name, tools)
+            self.assertTrue(tools[name]["promptSnippet"])
+            self.assertIsInstance(tools[name]["description"], list)
+            self.assertGreater(len(tools[name]["description"]), 3)
+            self.assertTrue(tools[name]["parameters"])
+
+    def test_descriptions_do_not_carry_the_policy(self):
+        """What a tool is and how to call it belongs here. When to call it is
+        prompts/inject.md, and duplicating it in two injected surfaces is how the
+        two drift apart."""
+        import json
+        tools = json.loads((memlib.REPO_DIR / "extensions" / "pi-memory" / "tools.json").read_text())
+        remember = " ".join(tools["remember"]["description"]).lower()
+        for phrase in ("at the start of a turn", "before other work", "after answering a question"):
+            self.assertNotIn(phrase, remember)
+        prose = (memlib._preamble_path().read_text()).lower()
+        self.assertIn("at the start of a turn", prose)  # the policy, in one place
+
+    def test_verify_reports_broken_tool_definitions(self):
+        import unittest.mock as mock
+        self.grad()
+        with mock.patch.object(memlib.Path, "read_text", return_value='{"remember": {}}'):
+            problems = memlib.verify(self.conn)
+        self.assertTrue(any("tools.json" in p for p in problems), problems)
+
+
+class TestExtensionLoads(Base):
+    """The extension is the one component whose failure is invisible from here:
+    a syntax error or a bad import takes the memory system down in every new
+    session while the CLI, the store and every test above carry on passing. It
+    happened once during development and nothing caught it."""
+
+    def test_extension_parses_and_registers_its_tools(self):
+        import json as _json
+        import shutil
+        import subprocess
+
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node not available")
+        entry = memlib.REPO_DIR / "extensions" / "pi-memory" / "index.ts"
+        script = (
+            "const tools = {};\n"
+            "const fake = { on: () => {}, registerTool: (t) => { tools[t.name] = t; },"
+            " registerCommand: () => {} };\n"
+            f"const mod = await import({_json.dumps(str(entry))});\n"
+            "mod.default(fake);\n"
+            "for (const n of ['remember', 'recall']) {\n"
+            "  if (!tools[n]) { console.error('missing tool ' + n); process.exit(3); }\n"
+            "}\n"
+            "console.log(Object.keys(tools).join(','));\n"
+        )
+        proc = subprocess.run(
+            [node, "--experimental-strip-types", "--input-type=module", "-e", script],
+            capture_output=True, text=True, timeout=60, cwd=str(entry.parent),
+        )
+        self.assertEqual(proc.returncode, 0, f"{proc.stdout}\n{proc.stderr}")
+        self.assertIn("remember", proc.stdout)
+        self.assertIn("recall", proc.stdout)
+
+    def test_tool_descriptions_are_wired_from_the_json_file(self):
+        import json as _json
+        import shutil
+        import subprocess
+
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("node not available")
+        entry = memlib.REPO_DIR / "extensions" / "pi-memory" / "index.ts"
+        script = (
+            "const tools = {};\n"
+            "const fake = { on: () => {}, registerTool: (t) => { tools[t.name] = t; },"
+            " registerCommand: () => {} };\n"
+            f"const mod = await import({_json.dumps(str(entry))});\n"
+            "mod.default(fake);\n"
+            "console.log(JSON.stringify({ remember: tools.remember.description,"
+            " recall: tools.recall.description }));\n"
+        )
+        proc = subprocess.run(
+            [node, "--experimental-strip-types", "--input-type=module", "-e", script],
+            capture_output=True, text=True, timeout=60, cwd=str(entry.parent),
+        )
+        self.assertEqual(proc.returncode, 0, f"{proc.stdout}\n{proc.stderr}")
+        wired = _json.loads(proc.stdout.strip().split("\n")[-1])
+        file = _json.loads((entry.parent / "tools.json").read_text())
+        for name in ("remember", "recall"):
+            self.assertEqual(wired[name], "\n".join(file[name]["description"]))

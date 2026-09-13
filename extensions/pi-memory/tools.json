@@ -1,0 +1,55 @@
+{
+  "_comment": "Tool definitions: what each tool is and how to call it. Deliberately not when to call them — that policy is prompts/inject.md, which is injected into every session and is the only place it should live. This file is adjacent to the extension rather than in prompts/ because the extension is its only reader, and sitting next to index.ts guarantees the path resolves however pi loads the module.",
+
+  "remember": {
+    "promptSnippet": "Record a durable observation about the user or project for a future session",
+    "description": [
+      "Record something durable that will still be useful in a future session.",
+      "",
+      "Write it so that someone with no memory of this conversation could act on it.",
+      "Include the specifics: the command, the path, the number, the reason behind a",
+      "preference, what you got wrong. A memory can never be made more detailed later",
+      "than the thought it came from, so detail left out here is lost for good.",
+      "",
+      "Cut the narration. What bloats a thought is the story of what you were doing,",
+      "not the facts in it — keep the nouns and the specifics and drop the account of",
+      "how you got there. Prefer the general over the anecdote: write the rule about",
+      "the recurring task and attach the specifics to it, because a note tied to one",
+      "instance never matches a future one.",
+      "",
+      "One observation per call. A thought carrying several unrelated facts can only be",
+      "filed as a unit, which makes it harder for the nightly pass to keep what",
+      "matters and drop what does not.",
+      "",
+      "Do not judge whether it is worth keeping. A nightly pass filters and files",
+      "these, and it can only filter what you recorded."
+    ],
+    "parameters": {
+      "thought": "The observation, written in full with the specifics — the command, path, number or reason. One observation per call. No date or session id needed; those are added automatically."
+    }
+  },
+
+  "recall": {
+    "promptSnippet": "Fetch a memory's full text at full resolution and record that it was used",
+    "description": [
+      "Read one memory at full resolution, and record that it was used.",
+      "",
+      "The list in the Memory section shows each entry at whatever level it has decayed",
+      "to, which is often compressed to a handful of keywords. Every entry's full",
+      "original text is kept regardless, and this call returns it: a compressed entry",
+      "comes back with the specifics that were summarised away — the exact command, the",
+      "path, the number, the reason. The call returns at least what the list line shows,",
+      "and for a decayed entry it returns substantially more.",
+      "",
+      "It also adds one to the entry's cumulative evidence count. That count never goes",
+      "down: it decides which entries are compressed when the store runs out of room,",
+      "and which eventually become permanent.",
+      "",
+      "An id that is not in the list returns an error rather than a guess, so an id",
+      "that looks subtly wrong is worth re-reading from the list before calling."
+    ],
+    "parameters": {
+      "memory_id": "Id of the memory to recall, exactly as it appears in the list, e.g. \"m3f\". Without brackets."
+    }
+  }
+}

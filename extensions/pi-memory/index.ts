@@ -39,11 +39,84 @@
  */
 
 import { execFile } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { promisify } from "node:util";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
 const execFileAsync = promisify(execFile);
+
+// ---------------------------------------------------------------------------
+// tool text
+// ---------------------------------------------------------------------------
+//
+// The wording of both tools lives in tools.json next to this file, so it can be
+// reviewed and changed without editing code. It is adjacent rather than in
+// prompts/ because this module is its only reader, and sitting beside index.ts
+// resolves however pi loads the extension.
+//
+// These definitions say what each tool is and how to call it. They deliberately
+// do not say when to call it: that policy is prompts/inject.md, injected into
+// every session, and it is the only place it should live.
+
+type ToolText = {
+  promptSnippet: string;
+  description: string[];
+  parameters: Record<string, string>;
+};
+type ToolsFile = { remember: ToolText; recall: ToolText };
+
+const FALLBACK_TEXT: ToolsFile = {
+  remember: {
+    promptSnippet: "Record a durable observation for a future session",
+    description: [
+      "Record something durable that will still be useful in a future session.",
+      "",
+      "Include the specifics: the command, the path, the number, the reason behind a",
+      "preference. A memory can never be made more detailed later than the thought it",
+      "came from, so detail left out here is lost. One observation per call.",
+      "",
+      "(tools.json failed to load; this is the built-in fallback. Run `memory verify`.)",
+    ],
+    parameters: { thought: "The observation, written in full with the specifics." },
+  },
+  recall: {
+    promptSnippet: "Fetch a memory's full text at full resolution",
+    description: [
+      "Read one memory at full resolution, and record that it was used.",
+      "",
+      "The list shows each entry at whatever level it has decayed to, often a handful",
+      "of keywords. Every entry's full original text is kept, and this returns it.",
+      "",
+      "(tools.json failed to load; this is the built-in fallback. Run `memory verify`.)",
+    ],
+    parameters: { memory_id: "Id of the memory to recall, e.g. \"m3f\"." },
+  },
+};
+
+function loadToolText(): ToolsFile {
+  try {
+    const parsed = JSON.parse(
+      readFileSync(new URL("./tools.json", import.meta.url), "utf8"),
+    ) as ToolsFile;
+    for (const name of ["remember", "recall"] as const) {
+      const t = parsed[name];
+      if (!t?.promptSnippet || !Array.isArray(t.description) || !t.parameters) {
+        throw new Error(`${name} needs promptSnippet, description[] and parameters{}`);
+      }
+    }
+    return parsed;
+  } catch (err) {
+    // Degrade rather than refuse to load: a typo in a description file should not
+    // take the whole memory system down with it. The failure is loud in pi's log
+    // and in `memory verify`, and the fallback text says so in the tool itself.
+    console.error(`[pi-memory] tools.json unusable: ${(err as Error).message}`);
+    return FALLBACK_TEXT;
+  }
+}
+
+const TOOL_TEXT = loadToolText();
+const asDescription = (t: ToolText) => t.description.join("\n");
 
 /** Overridable so a development checkout can be pointed at without reinstalling. */
 const CLI = process.env.PI_MEMORY_CLI ?? "memory";
@@ -133,35 +206,11 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "remember",
     label: "Remember",
-    description: [
-      "Record something you learned that will still be useful in a future session.",
-      "",
-      "Write it out in full — several sentences if needed, with the specifics:",
-      "commands, paths, numbers, the reason behind a preference, what you got wrong.",
-      "A nightly pass merges and files these, and a memory can never be made more",
-      "detailed later than the thought it came from, so detail omitted here is lost.",
-      "",
-      "The highest-value memories surface after the fact. Once a question is",
-      "answered or a task completed, ask what cost you the most steps — grepping to",
-      "locate a file, rediscovering a convention, re-deriving a decision — and",
-      "record the fact that would have skipped them. Write it at the level of the",
-      "recurring task, not the one-off instance, with the specifics attached: a",
-      "memory that only matches one instance is never recalled, so it earns",
-      "nothing.",
-      "",
-      "Do not judge whether it is important enough to keep — that is decided later,",
-      "with hindsight. Record freely.",
-    ].join("\n"),
-    promptSnippet: "Record a durable observation about the user or project for future sessions",
-    promptGuidelines: [
-      "Call remember when you learn something durable: a correction from the user, a project convention, a build or test command, a constraint, a preference, or a mistake worth not repeating. Prefer over-recording; a nightly pass filters.",
-      "Do not call remember for transient task state, or to restate something already in the Memory section unless you are correcting it.",
-      "After answering a question or completing a task, reflect on the path: if a single fact — a file location, a convention, a decision — would have saved you a pile of steps, record it, generalised enough to apply to the next instance of the task.",
-    ],
+    description: asDescription(TOOL_TEXT.remember),
+    promptSnippet: TOOL_TEXT.remember.promptSnippet,
     parameters: Type.Object({
       thought: Type.String({
-        description:
-          "The observation, written in full with specifics, generalised to the recurring task so a future instance of it matches. No date or session id needed — those are added automatically.",
+        description: TOOL_TEXT.remember.parameters.thought,
       }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx: ExtensionContext) {
@@ -201,39 +250,11 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool({
     name: "recall",
     label: "Recall",
-    description: [
-      "Records use of a memory from the Memory section and returns its full-resolution",
-      "text.",
-      "",
-      "Use it proactively, at the start of a turn: before other work, scan the",
-      "injected Memory section for anything that could make the task faster or more",
-      "accurate — a compressed entry whose keywords look relevant, a path or command",
-      "that matches the terrain, a preference that constrains what you are about to",
-      "do — and recall those first. You can also call it mid-turn when a memory",
-      "proves useful.",
-      "",
-      "Recalling returns the entry's full text. A terse entry has been compressed by",
-      "disuse, not written that way: the full version is still on disk, so the call",
-      "recovers the exact command, path, number or reason that was summarised away.",
-      "",
-      "It also adds one to that memory's cumulative evidence count, a vote that it",
-      "earned its place. The count never goes down, so votes accumulate into",
-      "permanence: the weakest entries are compressed when the store runs out of",
-      "room, and an entry that reaches 50 becomes core and is never forgotten.",
-      "",
-      "The test is relevance to what you are about to do — which is why the check",
-      "happens at the top of the turn. Do not recall entries at random just to see",
-      "what they say, and do not invent ids: a speculative vote is worse than a",
-      "missing one because it keeps dead weight alive forever.",
-    ].join("\n"),
-    promptSnippet: "Fetch a memory's full text by id — scan the Memory section at the start of each turn",
-    promptGuidelines: [
-      "At the start of a turn, before doing other work, scan the injected Memory section and recall any entry that could make the task faster or more accurate. Recalling returns the full-resolution text (for a compressed entry, the detail that was summarised away) and votes for the entry.",
-      "Call recall again mid-turn when a memory proves useful. Do not recall entries at random, and do not invent ids — relevance to what you are about to do is the test.",
-    ],
+    description: asDescription(TOOL_TEXT.recall),
+    promptSnippet: TOOL_TEXT.recall.promptSnippet,
     parameters: Type.Object({
       memory_id: Type.String({
-        description: "Id of the memory to recall, e.g. \"m3f\". Without brackets.",
+        description: TOOL_TEXT.recall.parameters.memory_id,
       }),
     }),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx: ExtensionContext) {
