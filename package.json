@@ -1,0 +1,33 @@
+{
+  "name": "pi-memory",
+  "version": "0.1.0",
+  "description": "A durable memory store for pi agents: capture raw observations, consolidate them nightly, inject the result into every session. SQLite-backed, with the invariants enforced in code rather than in a prompt.",
+  "keywords": [
+    "pi-package",
+    "memory",
+    "pi",
+    "agent"
+  ],
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "extensions"
+    ],
+    "skills": [
+      "skills"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "scripts": {
+    "test": "python3 -m unittest discover -s tests",
+    "status": "python3 bin/memory status",
+    "verify": "python3 bin/memory verify"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "type": "module"
+}

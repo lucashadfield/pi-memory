@@ -1,0 +1,466 @@
+#!/usr/bin/env python3
+"""
+memory — the CLI that is the entire interface to the memory store.
+
+Everything speaks verbs to this, never SQL: the pi extension, the nightly
+dreamer, the analytics, and you. The database is an implementation detail, and
+this is the only thing that writes it.
+
+    memory render                 the block injected at the start of a session
+    memory remember --text ...    record a raw observation
+    memory recall <id>            fetch a memory's full text and vote for it
+    memory status | budget | list | show <id> | log
+    memory verify                 check the invariants
+    memory graduate/reinforce/correct/compress/drop/merge/promote
+    memory dream                  print the consolidation instructions
+    memory import --from DIR      load a legacy instance
+    memory export                 everything analytics needs, as JSON
+
+Exit codes are stable, so callers never have to match on message text:
+    0 ok   1 unexpected   2 usage   3 unknown id   4 refused by an invariant   5 busy
+"""
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+import memlib  # noqa: E402
+
+EXIT_OK = 0
+EXIT_ERROR = 1
+EXIT_USAGE = 2
+EXIT_UNKNOWN_ID = 3
+EXIT_REFUSED = 4
+EXIT_BUSY = 5
+
+REFUSALS = {
+    "core_is_permanent", "already_compressed_today", "at_l3_use_drop",
+    "not_earned", "not_active", "id_in_use", "bad_id",
+    "compressed_text_required",
+}
+
+
+def read_text(args_text: str | None) -> str:
+    if args_text == "-" or args_text is None and not sys.stdin.isatty():
+        return sys.stdin.read()
+    return args_text or ""
+
+
+def session_of(args) -> str | None:
+    return getattr(args, "session", None) or os.environ.get("PI_SESSION_ID") or None
+
+
+def emit(result: dict, as_json: bool, human: str | None = None):
+    """One place that decides how a result reaches stdout, so every caller sees
+    the same contract: JSON with an `ok` field, or prose for humans."""
+    if as_json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    elif human is not None:
+        print(human)
+    elif result.get("ok"):
+        print(json.dumps(result, ensure_ascii=False))
+    else:
+        print(f"error: {result.get('error')}", file=sys.stderr)
+    if not result.get("ok"):
+        raise SystemExit(EXIT_REFUSED if result.get("error") in REFUSALS else EXIT_UNKNOWN_ID
+                         if result.get("error") == "unknown_id" else EXIT_ERROR)
+
+
+# --------------------------------------------------------------------------
+# read commands
+# --------------------------------------------------------------------------
+
+def cmd_status(conn, args):
+    h = memlib.headline(conn)
+    occ = memlib.occupancy(conn)
+    if args.json:
+        emit({"ok": True, **h, "occupancy": occ}, True)
+        return
+    over = "  OVER" if h["over_total"] else "  ok"
+    lines = [
+        f"entries       {h['entries']}  ({h['core']} core, {h['dropped']} dropped,"
+        f" {h['merged']} merged)",
+        f"decayable     {h['decayable_tokens']}/{h['total_tokens']} tok{over}",
+    ]
+    for lv in (1, 2, 3):
+        o = occ["levels"][lv]
+        lines.append(f"  L{lv}          {o['entries']:2d} entries  {o['tokens']:5d}/{o['target_tokens']} tok"
+                     f"  {o['over_target']:+d} vs target")
+    lines += [
+        f"core          {h['core_tokens']}/{h['core_cap_tokens']} tok"
+        f"{'  OVER' if h['core_over'] else ''} (exempt)",
+        f"next squeeze  L{h['next_to_squeeze']} (only matters when over budget)",
+        f"pending       {h['pending_thoughts']} thoughts awaiting a dream",
+        f"evidence      {h['total_uses']} total, max {h['max_uses']},"
+        f" {h['never_recalled']} never recalled",
+        f"database      {memlib.db_path()}",
+    ]
+    emit({"ok": True}, args.json, "\n".join(lines))
+
+
+def cmd_budget(conn, args):
+    occ = memlib.occupancy(conn)
+    emit({"ok": True, **occ}, args.json, json.dumps(occ, indent=2))
+
+
+def cmd_list(conn, args):
+    q = "SELECT * FROM memories"
+    where, params = [], []
+    if args.state != "all":
+        where.append("state = ?")
+        params.append(args.state)
+    if args.level:
+        where.append("level = ?")
+        params.append(args.level)
+    if args.core:
+        where.append("core = 1")
+    if where:
+        q += " WHERE " + " AND ".join(where)
+    q += " ORDER BY position ASC, id ASC"
+    rows = conn.execute(q, params).fetchall()
+    out = []
+    for r in rows:
+        v = memlib.version_at_level(conn, r["id"], r["level"])
+        out.append({
+            "id": r["id"], "state": r["state"], "level": r["level"], "uses": r["uses"],
+            "core": bool(r["core"]), "noted": r["noted"], "last_recalled": r["last_recalled"],
+            "text": v["text"] if v else None,
+        })
+    if args.json:
+        emit({"ok": True, "memories": out}, True)
+        return
+    for r in out:
+        flags = " core" if r["core"] else ""
+        text = (r["text"] or "")[:110].replace("\n", " ")
+        print(f"[{r['id']}] L{r['level']} ↺{r['uses']}{flags}  {text}")
+
+
+def cmd_show(conn, args):
+    r = memlib.memory_any(conn, args.id)
+    if r is None:
+        emit({"ok": False, "error": "unknown_id", "id": args.id}, args.json)
+        return
+    versions = [dict(v) for v in conn.execute(
+        "SELECT level, text, ts, noted, author FROM versions WHERE memory_id = ?"
+        " ORDER BY level ASC, ts ASC", (r["id"],))]
+    events = [dict(e) for e in conn.execute(
+        "SELECT ts, actor, verb, session_id, detail FROM events WHERE memory_id = ?"
+        " ORDER BY ts ASC", (r["id"],))]
+    exposures = conn.execute(
+        "SELECT COUNT(*) c FROM exposures WHERE memory_id = ?", (r["id"],)).fetchone()["c"]
+    data = {"ok": True, "memory": dict(r), "versions": versions, "events": events,
+            "exposures": exposures}
+    if args.json:
+        emit(data, True)
+        return
+    print(f"[{r['id']}]  {r['state']}  L{r['level']}  ↺{r['uses']}"
+          f"{'  core' if r['core'] else ''}")
+    print(f"  noted {r['noted']}  last recalled {r['last_recalled'] or 'never'}"
+          f"  first seen {r['first_seen']}  injected {exposures}×")
+    if r["merged_into"]:
+        print(f"  merged into {r['merged_into']}")
+    print()
+    for v in versions:
+        print(f"  L{v['level']}  ({len(v['text'])}c, {v['author']})")
+        print(f"    {v['text']}")
+
+
+def cmd_render(conn, args):
+    block, ids, tokens = memlib.render(conn)
+    if args.session:
+        memlib.record_exposures(conn, args.session, ids, tokens)
+    if args.json:
+        emit({"ok": True, "block": block, "ids": ids, "tokens": tokens}, True)
+    else:
+        sys.stdout.write(block + "\n")
+
+
+def cmd_verify(conn, args):
+    problems = memlib.verify(conn)
+    h = memlib.headline(conn)
+    result = {"ok": not problems, "problems": problems, "headline": h}
+    if args.json:
+        emit({**result, "ok": True}, True)
+        return
+    if problems:
+        print(f"{len(problems)} problem(s):")
+        for p in problems:
+            print(f"  - {p}")
+    else:
+        print("all invariants hold")
+    print(f"entries {h['entries']}, decayable {h['decayable_tokens']}/{h['total_tokens']} tok,"
+          f" pending {h['pending_thoughts']}")
+    if problems:
+        raise SystemExit(EXIT_REFUSED)
+
+
+def cmd_log(conn, args):
+    since = None
+    if args.since:
+        from datetime import datetime
+        since = int(datetime.strptime(args.since, "%Y-%m-%d").timestamp())
+    rows = memlib.read_log(conn, since_ts=since, limit=args.limit)
+    if args.json:
+        emit({"ok": True, "events": [dict(r) for r in rows]}, True)
+        return
+    from datetime import datetime
+    for r in rows:
+        when = datetime.fromtimestamp(r["ts"]).strftime("%d/%m %H:%M")
+        detail = f"  {r['detail']}" if r["detail"] else ""
+        print(f"{when}  {r['actor']:5s} {r['verb']:10s} [{r['memory_id'] or '-'}]{detail}")
+
+
+def cmd_thoughts(conn, args):
+    rows = memlib.pending_thoughts(conn, state=args.state, limit=args.limit)
+    out = [dict(r) for r in rows]
+    if args.json:
+        emit({"ok": True, "thoughts": out, "count": len(out)}, True)
+        return
+    for t in out:
+        when = __import__("datetime").datetime.fromtimestamp(t["ts"]).strftime("%d/%m %H:%M")
+        proj = (t["project"] or "")[:40]
+        print(f"#{t['id']}  {when}  {proj}")
+        print(f"    {t['text'][:400]}")
+        print()
+
+
+def cmd_export(conn, args):
+    print(json.dumps(memlib.export(conn), ensure_ascii=False, indent=2))
+
+
+def cmd_dream(conn, args):
+    """Print the consolidation instructions, with this instance's paths and
+    budgets substituted in. The schedule prompt is one line that points here,
+    so the instructions can change without touching paseo config."""
+    template = (memlib.REPO_DIR / "prompts" / "dream.md").read_text()
+    occ = memlib.occupancy(conn)
+    subs = {
+        "{{repo_dir}}": str(memlib.REPO_DIR),
+        "{{instance_dir}}": str(memlib.instance_dir()),
+        "{{db}}": str(memlib.db_path()),
+        "{{cli}}": str(Path(__file__).resolve()),
+        "{{total_tokens}}": str(int(memlib.cfg(conn, "total_tokens", float))),
+        "{{core_tokens}}": str(int(memlib.cfg(conn, "core_tokens", float))),
+        "{{inject_max_tokens}}": str(int(memlib.cfg(conn, "inject_max_tokens", float))),
+        "{{over_budget}}": "yes" if occ["over_total"] else "no",
+        "{{next_to_squeeze}}": str(occ["next_to_squeeze"]),
+    }
+    out = template
+    for k, v in subs.items():
+        out = out.replace(k, v)
+    if args.json:
+        emit({"ok": True, "instructions": out}, True)
+    else:
+        sys.stdout.write(out)
+
+
+# --------------------------------------------------------------------------
+# write commands
+# --------------------------------------------------------------------------
+
+def cmd_remember(conn, args):
+    r = memlib.remember(conn, read_text(args.text), session_id=session_of(args),
+                        transcript=args.transcript or os.environ.get("PI_SESSION_FILE"),
+                        project=args.project or os.getcwd())
+    if not r.get("ok"):
+        emit(r, args.json)
+        return
+    emit(r, args.json, "Noted. It'll be consolidated on the next dream.")
+
+
+def cmd_recall(conn, args):
+    r = memlib.recall(conn, args.id, session_id=session_of(args))
+    if not r.get("ok"):
+        emit(r, args.json)
+        return
+    if r.get("already_counted"):
+        emit(r, args.json, f"{args.id} already counted this session.")
+        return
+    emit(r, args.json, r["text"])
+
+
+def cmd_graduate(conn, args):
+    emit(memlib.graduate(conn, read_text(args.text), source=args.source, actor=args.actor,
+                         memory_id=args.id, thought=args.thought), args.json)
+
+
+def cmd_reinforce(conn, args):
+    emit(memlib.reinforce(conn, args.id, text=read_text(args.text) if args.text else None,
+                          source=args.source, actor=args.actor, reset_full=args.reset_full,
+                          thought=args.thought),
+         args.json)
+
+
+def cmd_correct(conn, args):
+    emit(memlib.correct(conn, args.id, read_text(args.text), source=args.source,
+                        actor=args.actor, thought=args.thought), args.json)
+
+
+def cmd_compress(conn, args):
+    emit(memlib.compress(conn, args.id, source=read_text(args.text), actor=args.actor),
+         args.json)
+
+
+def cmd_drop(conn, args):
+    emit(memlib.drop(conn, args.id, reason=args.reason, actor=args.actor,
+                     thought=args.thought), args.json)
+
+
+def cmd_merge(conn, args):
+    absorbed = [a.strip() for a in args.absorbed.split(",") if a.strip()]
+    emit(memlib.merge(conn, args.survivor, absorbed,
+                      text=read_text(args.text) if args.text else None, actor=args.actor),
+         args.json)
+
+
+def cmd_promote(conn, args):
+    emit(memlib.promote(conn, args.id, actor=args.actor, force=args.stipulated), args.json)
+
+
+def cmd_import(conn, args):
+    import importer
+    r = importer.import_legacy(conn, Path(args.from_dir).expanduser().resolve(),
+                               force=getattr(args, "force", False))
+    emit(r, args.json, json.dumps(r, indent=2))
+
+
+# --------------------------------------------------------------------------
+# main
+# --------------------------------------------------------------------------
+
+def build_parser():
+    p = argparse.ArgumentParser(prog="memory", description="pi's memory store")
+    # --json belongs to the subcommands, not the top level, because callers append
+    # it (`memory status --json`) rather than prefixing it. The extension does
+    # exactly that, so a global-only flag broke every machine-facing call.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument("--json", action="store_true", help="machine-readable output")
+    p.add_argument("--db", help="override the database path")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    def add(name, fn, help_):
+        s = sub.add_parser(name, parents=[common], help=help_)
+        s.set_defaults(fn=fn)
+        return s
+
+    s = add("status", cmd_status, "headline state of the store")
+    s = add("budget", cmd_budget, "occupancy against the configured budgets")
+
+    s = add("list", cmd_list, "list memories")
+    s.add_argument("--level", type=int, choices=[1, 2, 3])
+    s.add_argument("--state", default="active", choices=["active", "dropped", "merged", "all"])
+    s.add_argument("--core", action="store_true")
+
+    s = add("show", cmd_show, "every version and event of one memory")
+    s.add_argument("id")
+
+    s = add("render", cmd_render, "print the block injected at session start")
+    s.add_argument("--session", help="session id, so exposure is recorded")
+
+    add("verify", cmd_verify, "check the store's invariants")
+
+    s = add("log", cmd_log, "what changed, and who changed it")
+    s.add_argument("--since", help="YYYY-MM-DD")
+    s.add_argument("--limit", type=int, default=50)
+
+    add("export", cmd_export, "the whole store as JSON (analytics seam)")
+
+    s = add("thoughts", cmd_thoughts, "raw observations awaiting a dream")
+    s.add_argument("--state", default="pending", choices=["pending", "done", "all"])
+    s.add_argument("--limit", type=int)
+
+    s = add("dream", cmd_dream, "print the consolidation instructions")
+
+    s = add("remember", cmd_remember, "record a raw observation")
+    s.add_argument("--text", help="the observation, or - for stdin")
+    s.add_argument("--session")
+    s.add_argument("--transcript")
+    s.add_argument("--project")
+
+    s = add("recall", cmd_recall, "fetch a memory's full text and vote for it")
+    s.add_argument("id")
+    s.add_argument("--session")
+
+    s = add("graduate", cmd_graduate, "new memory into the store, always at L1")
+    s.add_argument("--text", help="the entry text, or - for stdin")
+    s.add_argument("--id", help="reserve a specific id")
+    s.add_argument("--source")
+    s.add_argument("--thought", type=int, help="the thought this came from")
+    s.add_argument("--actor", default="dream")
+
+    s = add("reinforce", cmd_reinforce, "observed again: +1 evidence, merge specifics")
+    s.add_argument("id")
+    s.add_argument("--text")
+    s.add_argument("--source")
+    s.add_argument("--reset-full", action="store_true",
+                   help="the new observation carried detail the entry had lost")
+    s.add_argument("--thought", type=int)
+    s.add_argument("--actor", default="dream")
+
+    s = add("correct", cmd_correct, "the new observation wins")
+    s.add_argument("id")
+    s.add_argument("--text", required=True)
+    s.add_argument("--source")
+    s.add_argument("--thought", type=int)
+    s.add_argument("--actor", default="dream")
+
+    s = add("compress", cmd_compress, "one level shorter; refuses core, once a night")
+    s.add_argument("id")
+    s.add_argument("--text", required=True, help="the shorter form, or - for stdin")
+    s.add_argument("--source")
+    s.add_argument("--actor", default="dream")
+
+    s = add("drop", cmd_drop, "forget from the injected block; the text is kept")
+    s.add_argument("id")
+    s.add_argument("--reason")
+    s.add_argument("--thought", type=int)
+    s.add_argument("--actor", default="dream")
+
+    s = add("merge", cmd_merge, "fold memories into one, summing their evidence")
+    s.add_argument("--survivor", required=True)
+    s.add_argument("--absorbed", required=True, help="comma-separated ids")
+    s.add_argument("--text", help="a better-stated combined entry")
+    s.add_argument("--actor", default="dream")
+
+    s = add("promote", cmd_promote, "make permanent. Earned at 50, or stipulated")
+    s.add_argument("id")
+    s.add_argument("--stipulated", action="store_true",
+                   help="the user marked this permanent themselves")
+    s.add_argument("--actor", default="dream")
+
+    s = add("import", cmd_import, "load a legacy instance (memories.md + store.jsonl)")
+    s.add_argument("--from", dest="from_dir", required=True)
+    s.add_argument("--force", action="store_true",
+                   help="wipe the store and rebuild from the legacy instance")
+
+    return p
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    try:
+        conn = memlib.connect(Path(args.db) if args.db else None, create=True)
+    except Exception as exc:  # noqa: BLE001
+        print(f"error: cannot open the store: {exc}", file=sys.stderr)
+        raise SystemExit(EXIT_BUSY)
+    try:
+        args.fn(conn, args)
+    except SystemExit:
+        raise
+    except sqlite3_busy_error_types() as exc:  # pragma: no cover
+        print(f"error: store busy: {exc}", file=sys.stderr)
+        raise SystemExit(EXIT_BUSY)
+    finally:
+        conn.close()
+
+
+def sqlite3_busy_error_types():
+    import sqlite3
+    return (sqlite3.OperationalError,)
+
+
+if __name__ == "__main__":
+    main()
