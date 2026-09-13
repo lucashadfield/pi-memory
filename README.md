@@ -52,7 +52,6 @@ returns the full text), so there is no way to farm attention.
 git clone <this repo> ~/pi-memory
 cd ~/pi-memory
 ./install.sh                 # CLI on PATH, empty instance created
-./install.sh --import DIR    # ...or load an existing memories.md + store.jsonl
 ```
 
 Then install the pi side, which provides the `remember`/`recall` tools and the
@@ -69,14 +68,14 @@ paseo schedule create 'Run `memory dream` and follow the instructions it prints.
   --name dream --cron '0 3 * * *' --timezone Australia/Sydney --provider pi --cwd ~/pi-memory
 ```
 
-The schedule holds one line that points at `prompts/dream.md.j2` in this repository.
+The schedule holds one line that points at `prompts/dream.jinja2` in this repository.
 The consolidation procedure is therefore versioned with the code and reviewable
 in a diff, instead of living in a scheduler's configuration blob.
 
 ## The CLI
 
 `bin/memory` is the entire interface. Nothing else writes SQL, and the pi
-extension, the consolidation pass, the analytics and you all speak these verbs.
+extension, the consolidation pass and you all speak these verbs.
 
 ```
 read
@@ -88,7 +87,6 @@ read
   memory log [--since DATE]        what changed, and who changed it
   memory budget                    occupancy against the configured budget
   memory verify                    check the invariants
-  memory export                    the whole store as JSON
   memory dream                     print the consolidation instructions
 
 write
@@ -110,27 +108,39 @@ prints an object with an `ok` field.
 ## The viewer
 
 `paseo-plugin/` is a Paseo plugin that puts the whole store in a window inside
-the app, rather than in a browser tab or a terminal. It is a pure reader: it
+the app, rather than in a browser tab or a terminal. Its reads are pure: it
 renders what one `memory view` call returns, so the panel cannot disagree with
 `memory status`, and it records no exposure and casts no vote, because a viewer
 that moved the recall rate would corrupt the measurement it exists to display.
+Its writes are the three things a human does by hand, each a CLI verb run with
+`--actor human` so the `events` table attributes them to a person rather than
+to the dream: edit an entry's text (`correct`), drop it from the injected block
+(`drop` — soft, the text stays), and discard a pending thought (`discard`).
 
 ```bash
 cd paseo-plugin && npm install          # dependencies for the plugin bundler
 paseo plugin install ~/pi-memory/paseo-plugin
 ```
 
-Then look for **Memory** in the sidebar. Three tabs:
+Then look for **Memory** in the sidebar. The summary strip shows where the
+injected block's tokens go — fixed preamble, core against its cap, and each
+decayable level against its share target — as one bar and one legend that sum
+to the single quoted total, priced per entry. Three tabs:
 
 - **Memories** — every entry with its id, level, evidence count and injected
-  size. Expand one to walk its compression ladder: the chips show which levels
-  actually exist (and how many historical records sit at each), and the header
-  marks whether the level you are looking at is the one being injected.
-  A **level lens** at the top re-renders the whole list at L1, L2 or L3, which is
-  the fastest way to judge whether compression is losing something that matters.
-  Forgotten entries are hidden behind a toggle.
+  cost in tokens. Expand one to walk its compression ladder: the chips show
+  which levels actually exist (and how many historical records sit at each),
+  and the header marks whether the level you are looking at is the one being
+  injected. Editing rewrites the version at the injected level and keeps every
+  earlier one; dropping removes the entry from the block and leaves it behind
+  the forgotten toggle — core entries too, when a person confirms it, which is
+  the `--force` override the dreamer has no way to pass. A **level lens** at
+  the top re-renders the whole list at L1, L2 or L3, which is the fastest way
+  to judge whether compression is losing something that matters, and a **core**
+  chip filters the list to permanent entries.
 - **Thoughts** — the raw observations no dream has dispositioned yet, with their
-  project and timestamp, which is what tomorrow's consolidation will work from.
+  project, timestamp and size, which is what tomorrow's consolidation will work
+  from. Each can be discarded by hand.
 - **Prompt** — the exact text appended to the system prompt, verbatim, selectable.
 
 The plugin is not part of the pi package manifest in `package.json`, so pi will
@@ -155,17 +165,10 @@ single SQLite file: back it up by copying it.
 | `exposures` | which memories were injected into which sessions |
 | `live_memories` | a view — the only definition of "a memory that exists" |
 
-## Analysis
+## Tests
 ```bash
-python3 analytics/mine.py             # capture, recall, utility, occupancy
-python3 analytics/mine.py --snapshot  # one-line record for the trend
 python3 -m unittest discover -s tests # the invariants
 ```
-
-Because exposure is recorded rather than inferred, `mean_utility` and the
-recall rate by level are real measurements. The analytics' job is to replace
-argument with rates about how the store is actually used, and to say plainly
-when a number has not moved.
 
 ## Design notes
 

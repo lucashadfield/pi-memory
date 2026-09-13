@@ -3,8 +3,8 @@
 pi-memory core: schema access, invariants, and the verbs everything speaks.
 
 Nothing outside this module (and the schema file) is allowed to write SQL. The
-CLI in bin/memory is the only writer of the database; the pi extension, the
-dreamer, and the analytics all go through it.
+CLI in bin/memory is the only writer of the database; the pi extension and the
+dreamer both go through it.
 
 The two properties this module exists to guarantee:
 
@@ -240,19 +240,19 @@ def pending_thoughts(conn, state="pending", limit=None):
 # --------------------------------------------------------------------------
 
 def _inject_template_path() -> Path:
-    return REPO_DIR / "prompts" / "inject.md.j2"
+    return REPO_DIR / "prompts" / "inject.jinja2"
 
 
 def _dream_template_path() -> Path:
-    return REPO_DIR / "prompts" / "dream.md.j2"
+    return REPO_DIR / "prompts" / "dream.jinja2"
 
 
 # The slot the entries are substituted into. The block injected at session start
-# is one editable template, prompts/inject.md.j2, so the policy text and the
+# is one editable template, prompts/inject.jinja2, so the policy text and the
 # store's layout can be changed without touching code — and the same content is
 # what the viewer's Prompt tab shows.
 #
-# The templates carry a .j2 extension deliberately: they are input to a renderer,
+# The templates carry a .jinja2 extension deliberately: they are input to a renderer,
 # not documents. An agent that finds a .md file reads it as prose meant for it.
 MEMORIES_SLOT = "{{memories}}"
 
@@ -282,21 +282,20 @@ def entry_line(conn, row) -> str:
     return f"- [{row['id']}] {text}"
 
 
-def render(conn, session_id=None, truncate=True):
-    """Build the block injected at the start of a session.
+def _compose_block(conn, truncate=True):
+    """The rendered block and the parts it is made of.
 
-    Returns (block, ids, tokens). The block is prompts/inject.md.j2 with every
-    live memory at its current level substituted into {{memories}}, in `position`
-    order. Selection is still "everything" by design: the store is small and the
-    whole point of the level ladder is that unused entries are cheaper, not that
-    they are withheld. Ranking, if it ever comes, is a separate change with its
-    own measurement.
+    Returns (block, ids, entry_lines, preamble, truncated). `render` and the
+    viewer's breakdown both come through here, so a panel that splits the block
+    into segments is doing its arithmetic on the lines the model is actually
+    sent, rather than on a reconstruction of them.
     """
     template = strip_comments(_inject_template_path().read_text()).strip()
     rows = conn.execute(
         "SELECT * FROM memories WHERE state = 'active' ORDER BY position ASC, id ASC"
     ).fetchall()
     lines = [entry_line(conn, r) for r in rows]
+    preamble = substitute(template, {"memories": ""}).strip()
 
     def compose(entry_lines, truncated=False):
         body = "\n".join(entry_lines)
@@ -310,13 +309,12 @@ def render(conn, session_id=None, truncate=True):
         return (template + (f"\n\n{body}" if body else "")).strip()
 
     if not truncate:
-        return compose(lines), [r["id"] for r in rows], estimate_tokens(
-            len(compose(lines)), cfg(conn, "chars_per_token"))
+        return compose(lines), [r["id"] for r in rows], lines, preamble, False
 
     max_chars = tokens_to_chars(int(cfg(conn, "inject_max_tokens", float)),
                                 cfg(conn, "chars_per_token"))
     if len(compose(lines)) <= max_chars:
-        block = compose(lines)
+        block, kept, truncated = compose(lines), lines, False
     else:
         # Cut at an entry boundary, never mid-entry. The old renderer sliced the
         # string at a character offset, which could hand the agent half a memory.
@@ -328,11 +326,67 @@ def render(conn, session_id=None, truncate=True):
                 break
             kept.append(ln)
             total += len(ln) + 1
-        lines = kept
-        block = compose(kept, truncated=True)
+        block, truncated = compose(kept, truncated=True), True
 
-    ids = [r["id"] for r in rows][: len(lines)]
+    return block, [r["id"] for r in rows][: len(kept)], kept, preamble, truncated
+
+
+def render(conn, session_id=None, truncate=True):
+    """Build the block injected at the start of a session.
+
+    Returns (block, ids, tokens). The block is prompts/inject.jinja2 with every
+    live memory at its current level substituted into {{memories}}, in `position`
+    order. Selection is still "everything" by design: the store is small and the
+    whole point of the level ladder is that unused entries are cheaper, not that
+    they are withheld. Ranking, if it ever comes, is a separate change with its
+    own measurement.
+    """
+    block, ids, _lines, _preamble, _truncated = _compose_block(conn, truncate)
     return block, ids, estimate_tokens(len(block), cfg(conn, "chars_per_token"))
+
+
+def inject_tokens(conn, text: str) -> int:
+    """The one conversion, exposed so a caller can price a fragment the way the
+    budget does. `estimate_tokens` is the only place the constants live."""
+    return estimate_tokens(len(text), cfg(conn, "chars_per_token"))
+
+
+def injection_breakdown(conn):
+    """Where the injected block's tokens go: fixed preamble, core, and each
+    decayable level.
+
+    `occupancy` answers "is this bucket over budget" with a single ceil over the
+    bucket's character sum. This answers "what is the token cost of this entry"
+    with a ceil per entry, so core, L1/L2/L3 and the entries are separable and a
+    panel can show a memory's own price. The preamble is priced as the remainder
+    — block total minus the priced entries — so the parts sum to the one number
+    the viewer quotes, and the estimator's per-entry rounding lands in the fixed
+    text where it cannot distort a comparison between memories.
+    """
+    block, ids, lines, preamble, truncated = _compose_block(conn)
+    rows = {r["id"]: r for r in conn.execute("SELECT * FROM memories WHERE state = 'active'")}
+    level_tokens = {1: 0, 2: 0, 3: 0}
+    core_tokens = 0
+    entries = []
+    for line, mid in zip(lines, ids):
+        r = rows[mid]
+        t = inject_tokens(conn, line)
+        entries.append({"id": mid, "tokens": t, "core": bool(r["core"]), "level": r["level"]})
+        if r["core"]:
+            core_tokens += t
+        else:
+            level_tokens[r["level"] if r["level"] in level_tokens else 1] += t
+    decayable_tokens = sum(level_tokens.values())
+    block_tokens = inject_tokens(conn, block)
+    return {
+        "block_tokens": block_tokens,
+        "preamble_tokens": max(0, block_tokens - core_tokens - decayable_tokens),
+        "core_tokens": core_tokens,
+        "level_tokens": {str(k): v for k, v in level_tokens.items()},
+        "decayable_tokens": decayable_tokens,
+        "entries": entries,
+        "truncated": truncated,
+    }
 
 
 def record_exposures(conn, session_id, ids, block_tokens, levels=None):
@@ -369,7 +423,7 @@ def occupancy(conn):
     injection. That span is real on disk and costs the model nothing, so the old
     figure over-counted the store by roughly 10% (579 tokens at the 12/09
     migration) and gave the store headroom it did not know it had. The basis
-    change is deliberate and is recorded in analytics/report.md.
+    change is deliberate.
     """
     cpt = cfg(conn, "chars_per_token")
     total_tokens = int(cfg(conn, "total_tokens", float))
@@ -468,7 +522,7 @@ def verify(conn):
     ):
         problems.append(f"exposure for unknown memory {e['memory_id']}")
 
-    # The injected block is built from prompts/inject.md.j2. If the slot the
+    # The injected block is built from prompts/inject.jinja2. If the slot the
     # entries are substituted into is missing, every session silently loses the
     # entire store — a worse failure than any data problem under this function,
     # and an invisible one, so it is checked here.
@@ -750,21 +804,33 @@ def compress(conn, mid, source=None, actor="dream"):
     return {"ok": True, "id": mid, "from": row["level"], "to": new_level}
 
 
-def drop(conn, mid, reason=None, actor="dream", thought=None):
+def drop(conn, mid, reason=None, actor="dream", thought=None, force=False):
     """Forget it from the injected block. The versions stay as a dead archive and
     the thought that produced them stays in `thoughts`. Dropping is cheap, and
-    reversible in principle, which is what makes it safe to be aggressive."""
+    reversible in principle, which is what makes it safe to be aggressive.
+
+    Core is permanent for the dreamer, and `force` is the human override for it:
+    the panel passes it when a person explicitly confirms a core drop, and the
+    event records that it was forced. Ending the permanence ends the flag — a
+    dropped memory carries no core, so `core ⇒ active` holds by construction.
+    """
     row = memory_any(conn, mid)
     if row is None:
         return {"ok": False, "error": "unknown_id", "id": mid}
-    if row["core"]:
+    if row["core"] and not force:
         return {"ok": False, "error": "core_is_permanent", "id": mid}
     if row["state"] != "active":
+        if row["state"] == "dropped" and row["core"] and force:
+            conn.execute("UPDATE memories SET core = 0 WHERE id = ?", (mid,))
+            _event(conn, "drop", mid, {"reason": "core flag cleared on a dropped memory",
+                                       "forced": True}, actor=actor)
+            conn.commit()
+            return {"ok": True, "id": mid, "repaired": True}
         return {"ok": False, "error": "not_active", "id": mid, "state": row["state"]}
-    conn.execute("UPDATE memories SET state = 'dropped' WHERE id = ?", (mid,))
+    conn.execute("UPDATE memories SET state = 'dropped', core = 0 WHERE id = ?", (mid,))
     _link_thought(conn, thought, "drop", mid)
     _event(conn, "drop", mid, {"reason": reason, "level": row["level"], "uses": row["uses"],
-                               "thought": thought}, actor=actor)
+                               "thought": thought, "forced": bool(force)}, actor=actor)
     conn.commit()
     return {"ok": True, "id": mid}
 
@@ -838,35 +904,6 @@ def read_log(conn, since_ts=None, limit=50):
 # --------------------------------------------------------------------------
 # export
 # --------------------------------------------------------------------------
-
-def export(conn):
-    """Everything an analytics pass or a visualisation needs, in one call. This
-    is the seam a rebuilt viz consumes, so nothing has to reach into the schema."""
-    occ = occupancy(conn)
-    memories = []
-    for r in conn.execute("SELECT * FROM memories ORDER BY position ASC"):
-        versions = [dict(v) for v in conn.execute(
-            "SELECT level, text, ts, noted, author FROM versions WHERE memory_id = ?"
-            " ORDER BY level ASC, ts ASC", (r["id"],))]
-        memories.append({
-            "id": r["id"], "state": r["state"], "level": r["level"], "uses": r["uses"],
-            "noted": r["noted"], "last_recalled": r["last_recalled"], "core": bool(r["core"]),
-            "position": r["position"], "first_seen": r["first_seen"],
-            "merged_into": r["merged_into"], "source": r["source"],
-            "versions": versions,
-        })
-    return {
-        "generated_at": now_ts(),
-        "instance_dir": str(instance_dir()),
-        "db": str(db_path()),
-        "occupancy": occ,
-        "memories": memories,
-        "thoughts": [dict(t) for t in conn.execute("SELECT * FROM thoughts ORDER BY ts ASC")],
-        "events": [dict(e) for e in conn.execute("SELECT * FROM events ORDER BY ts ASC")],
-        "exposures": [dict(e) for e in conn.execute("SELECT * FROM exposures")],
-        "config": {r["key"]: r["value"] for r in conn.execute("SELECT * FROM config")},
-    }
-
 
 def headline(conn):
     occ = occupancy(conn)

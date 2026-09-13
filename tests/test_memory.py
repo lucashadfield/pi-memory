@@ -298,7 +298,7 @@ class TestRender(Base):
         self.assertEqual(occ["decayable_chars"], expected)
 
     def test_the_block_is_a_template_with_an_entries_slot(self):
-        """prompts/inject.md.j2 is the whole block, with {{memories}} where the
+        """prompts/inject.jinja2 is the whole block, with {{memories}} where the
         entries go, so the policy text and the layout are one editable file."""
         template = memlib._inject_template_path().read_text()
         self.assertIn(memlib.MEMORIES_SLOT, template)
@@ -424,7 +424,7 @@ class TestToolDefinitions(Base):
 
     def test_descriptions_do_not_carry_the_policy(self):
         """What a tool is and how to call it belongs here. When to call it is
-        prompts/inject.md.j2, and duplicating it in two injected surfaces is how the
+        prompts/inject.jinja2, and duplicating it in two injected surfaces is how the
         two drift apart."""
         import json
         tools = json.loads((memlib.REPO_DIR / "extensions" / "pi-memory" / "tools.json").read_text())
@@ -432,7 +432,7 @@ class TestToolDefinitions(Base):
         for phrase in ("at the start of a turn", "before other work", "after answering a question"):
             self.assertNotIn(phrase, remember)
         prose = (memlib._inject_template_path().read_text()).lower()
-        self.assertIn("at the start of a turn", prose)  # the policy, in one place
+        self.assertIn("at the start of any conversation or turn", prose)  # the policy, in one place
 
     def test_verify_reports_broken_tool_definitions(self):
         import unittest.mock as mock
@@ -575,19 +575,18 @@ class TestExtensionLoads(Base):
 
 
 class TestTemplates(Base):
-    """The templates are input to a renderer, not documents. The .j2 extension is
-    the signal an agent needs to stop treating them as prose, and the {# #}
-    comments are how a template explains itself without that explanation reaching
-    a model."""
+    """The templates are input to a renderer, not documents. The .jinja2 extension
+    is the signal an agent needs to stop treating them as prose. They carry no
+    self-description: the policy is what a session reads, and a comment stripped
+    before injection is one more thing to forget to strip."""
 
-    def test_both_templates_use_the_j2_extension(self):
+    def test_both_templates_use_the_jinja2_extension(self):
         for path in (memlib._inject_template_path(), memlib._dream_template_path()):
-            self.assertTrue(str(path).endswith(".j2"), path)
+            self.assertTrue(str(path).endswith(".jinja2"), path)
             self.assertTrue(path.exists(), f"{path} is missing")
 
-    def test_the_inject_template_documents_itself(self):
+    def test_the_inject_template_carries_the_slot(self):
         raw = memlib._inject_template_path().read_text()
-        self.assertIn("{#", raw)          # explains what it is
         self.assertIn(memlib.MEMORIES_SLOT, raw)
 
     def test_comments_never_reach_the_prompt(self):

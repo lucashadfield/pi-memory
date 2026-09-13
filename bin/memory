@@ -3,7 +3,7 @@
 memory — the CLI that is the entire interface to the memory store.
 
 Everything speaks verbs to this, never SQL: the pi extension, the nightly
-dreamer, the analytics, and you. The database is an implementation detail, and
+dreamer, and you. The database is an implementation detail, and
 this is the only thing that writes it.
 
     memory render                 the block injected at the start of a session
@@ -51,6 +51,18 @@ def read_text(args_text: str | None) -> str:
 
 def session_of(args) -> str | None:
     return getattr(args, "session", None) or os.environ.get("PI_SESSION_ID") or None
+
+
+def tokens_only(value):
+    """Drop character accounting from a payload. memlib counts characters because
+    that is what a string has; every surface reports tokens, and carrying both
+    units is how a reader ends up quoting the wrong one."""
+    if isinstance(value, dict):
+        return {k: tokens_only(v) for k, v in value.items()
+                if not (isinstance(k, str) and (k == "chars" or k.endswith("_chars")))}
+    if isinstance(value, list):
+        return [tokens_only(v) for v in value]
+    return value
 
 
 def emit(result: dict, as_json: bool, human: str | None = None):
@@ -102,7 +114,7 @@ def cmd_status(conn, args):
 
 
 def cmd_budget(conn, args):
-    occ = memlib.occupancy(conn)
+    occ = tokens_only(memlib.occupancy(conn))
     emit({"ok": True, **occ}, args.json, json.dumps(occ, indent=2))
 
 
@@ -164,7 +176,7 @@ def cmd_show(conn, args):
         print(f"  merged into {r['merged_into']}")
     print()
     for v in versions:
-        print(f"  L{v['level']}  ({len(v['text'])}c, {v['author']})")
+        print(f"  L{v['level']}  ({memlib.inject_tokens(conn, v['text'])} tok, {v['author']})")
         print(f"    {v['text']}")
 
 
@@ -241,17 +253,23 @@ def cmd_view(conn, args):
     called without a session id precisely so that no exposure rows are written — a
     viewer that recorded exposures would corrupt the recall-rate measurement it is
     there to display.
+
+    Token accounting is done here, with `memlib.inject_tokens`, and the payload
+    carries no character counts: a viewer that computed its own would be a second
+    implementation of the estimator, and the two would drift.
     """
     headline = memlib.headline(conn)
-    occ = memlib.occupancy(conn)
+    occ = tokens_only(memlib.occupancy(conn))
     block, _ids, tokens = memlib.render(conn, session_id=None)
+    breakdown = memlib.injection_breakdown(conn)
 
     memories = []
     for r in conn.execute("SELECT * FROM memories ORDER BY state = 'active' DESC,"
                           " position ASC, id ASC"):
         versions = [
             {"level": v["level"], "text": v["text"], "ts": v["ts"],
-             "author": v["author"], "noted": v["noted"]}
+             "author": v["author"], "noted": v["noted"],
+             "tokens": memlib.inject_tokens(conn, v["text"])}
             for v in conn.execute(
                 "SELECT level, text, ts, author, noted FROM versions WHERE memory_id = ?"
                 " ORDER BY level ASC, ts ASC", (r["id"],))
@@ -262,11 +280,13 @@ def cmd_view(conn, args):
             "uses": r["uses"], "core": bool(r["core"]), "noted": r["noted"],
             "last_recalled": r["last_recalled"], "position": r["position"],
             "first_seen": r["first_seen"], "merged_into": r["merged_into"],
-            "injected_chars": len(kept["text"]) if kept else 0,
+            "injected_tokens": memlib.inject_tokens(conn, memlib.entry_line(conn, r)) if kept else 0,
             "versions": versions,
         })
 
     thoughts = [dict(t) for t in memlib.pending_thoughts(conn, state="pending")]
+    for t in thoughts:
+        t["tokens"] = memlib.inject_tokens(conn, t["text"])
     events = [dict(e) for e in conn.execute(
         "SELECT ts, actor, verb, memory_id, session_id, detail FROM events"
         " ORDER BY id DESC LIMIT ?", (args.events,))]
@@ -279,9 +299,9 @@ def cmd_view(conn, args):
         "instance": {"dir": str(memlib.instance_dir()), "db": str(memlib.db_path())},
         "headline": headline,
         "occupancy": occ,
+        "breakdown": breakdown,
         "rendered": {"block": block, "tokens": tokens,
-                     "preamble_chars": len(block) - sum(m["injected_chars"] for m in memories
-                                                        if m["state"] == "active")},
+                     "preamble_tokens": breakdown["preamble_tokens"]},
         "memories": memories,
         "thoughts": thoughts,
         "events": events,
@@ -300,18 +320,16 @@ def cmd_view(conn, args):
         o = occ["levels"][lv]
         print(f"  L{lv}      {o['entries']:2d} entries  {o['tokens']:5d}/{o['target_tokens']} tok")
     print(f"pending   {h['pending_thoughts']} thoughts")
-    print(f"rendered  {tokens} tok injected per session")
-
-
-def cmd_export(conn, args):
-    print(json.dumps(memlib.export(conn), ensure_ascii=False, indent=2))
+    print(f"rendered  {tokens} tok injected per session = {breakdown['preamble_tokens']} preamble"
+          f" + {breakdown['core_tokens']} core + {breakdown['decayable_tokens']} decayable"
+          f" (+{breakdown['slack_tokens']} rounding)")
 
 
 def cmd_dream(conn, args):
     """Print the consolidation instructions, with this instance's paths and
     budgets substituted in. The schedule prompt is one line that points here,
     so the instructions can change without touching paseo config."""
-    template = (memlib.REPO_DIR / "prompts" / "dream.md.j2").read_text()
+    template = (memlib.REPO_DIR / "prompts" / "dream.jinja2").read_text()
     occ = memlib.occupancy(conn)
     subs = {
         "repo_dir": str(memlib.REPO_DIR),
@@ -385,7 +403,7 @@ def cmd_compress(conn, args):
 
 def cmd_drop(conn, args):
     emit(memlib.drop(conn, args.id, reason=args.reason, actor=args.actor,
-                     thought=args.thought), args.json)
+                     thought=args.thought, force=args.force), args.json)
 
 
 def cmd_merge(conn, args):
@@ -397,13 +415,6 @@ def cmd_merge(conn, args):
 
 def cmd_promote(conn, args):
     emit(memlib.promote(conn, args.id, actor=args.actor, force=args.stipulated), args.json)
-
-
-def cmd_import(conn, args):
-    import importer
-    r = importer.import_legacy(conn, Path(args.from_dir).expanduser().resolve(),
-                               force=getattr(args, "force", False))
-    emit(r, args.json, json.dumps(r, indent=2))
 
 
 # --------------------------------------------------------------------------
@@ -444,8 +455,6 @@ def build_parser():
     s = add("log", cmd_log, "what changed, and who changed it")
     s.add_argument("--since", help="YYYY-MM-DD")
     s.add_argument("--limit", type=int, default=50)
-
-    add("export", cmd_export, "the whole store as JSON (analytics seam)")
 
     s = add("view", cmd_view, "everything a viewer needs, in one read-only call")
     s.add_argument("--events", type=int, default=60)
@@ -497,6 +506,8 @@ def build_parser():
 
     s = add("drop", cmd_drop, "forget from the injected block; the text is kept")
     s.add_argument("id")
+    s.add_argument("--force", action="store_true",
+                   help="drop a core memory; the human override for the permanent flag")
     s.add_argument("--reason")
     s.add_argument("--thought", type=int)
     s.add_argument("--actor", default="dream")
@@ -518,11 +529,6 @@ def build_parser():
     s.add_argument("--stipulated", action="store_true",
                    help="the user marked this permanent themselves")
     s.add_argument("--actor", default="dream")
-
-    s = add("import", cmd_import, "load a legacy instance (memories.md + store.jsonl)")
-    s.add_argument("--from", dest="from_dir", required=True)
-    s.add_argument("--force", action="store_true",
-                   help="wipe the store and rebuild from the legacy instance")
 
     return p
 

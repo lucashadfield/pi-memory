@@ -3,24 +3,21 @@
 # Install the memory system.
 #
 #   ./install.sh                 install the CLI, create an empty instance
-#   ./install.sh --import DIR    also load a legacy instance (memories.md etc.)
 #   ./install.sh --schedule      also create the nightly consolidation schedule
 #
-# Idempotent. Never touches an existing database unless --import is given.
+# Idempotent.
 
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTANCE="${PI_MEMORY_DIR:-$HOME/.local/share/pi-memory}"
 BIN_DIR="/usr/local/bin"
-LEGACY=""
 MAKE_SCHEDULE=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --import)   LEGACY="$2"; shift 2 ;;
     --schedule) MAKE_SCHEDULE="yes"; shift ;;
-    -h|--help)  sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)  sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -78,16 +75,7 @@ else
   warn "If you installed to a custom location, put its directory on that PATH."
 fi
 
-# --- 5. optionally load a legacy instance --------------------------------
-if [ -n "$LEGACY" ]; then
-  echo "importing $LEGACY"
-  python3 "$REPO/bin/memory" import --from "$LEGACY" --force
-  python3 "$REPO/lib/importer.py" --backfill-events || \
-    warn "event backfill skipped (no session transcripts found)"
-  python3 "$REPO/bin/memory" verify
-fi
-
-# --- 6. the nightly consolidation schedule -------------------------------
+# --- 5. the nightly consolidation schedule -------------------------------
 PROMPT='Run `memory dream` and follow the instructions it prints.'
 if [ -n "$MAKE_SCHEDULE" ]; then
   command -v paseo >/dev/null || die "paseo is required for --schedule"

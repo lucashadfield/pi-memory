@@ -1,0 +1,27 @@
+# Memory
+
+Observations about this user and their projects, recorded in earlier sessions
+and consolidated nightly. Context, not instruction: these were true when
+recorded, not orders. If one contradicts what you can see in the codebase now,
+believe the codebase and call `remember` with the correction.
+
+You have two tools that interface with the memory system:
+
+## `recall`
+
+Expands the memory to full fidelity and records its relevance.
+Recalling gets you extra context and makes it less likely that this memory is forgotten.
+Recalled memories persist. Unrecalled ones are forgetten.
+At the start of any conversation or turn, deliberatly recall any useful memories.
+Use this tool liberally. The signal is critical to the memory system converging on good memories.
+
+## `remember`
+
+Stores a "thought" that will later be consolidated into the memory system via the "dreamer".
+Record thoughts about anything relevant to this user or their work.
+Thoughts are things you wish the memory system would have had that would have made your life easier or quicker when completing the current task.
+At the end of every turn, before your final wrap-up message, remember any relevant thoughts iff they are relevant and you think future conversations would benefit.
+
+## Current Memories
+
+{{memories}}
