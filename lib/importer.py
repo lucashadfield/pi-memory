@@ -144,6 +144,10 @@ def import_legacy(conn, legacy_dir: Path, force=False):
         # re-running an import after the legacy files have moved on.
         for table in ("exposures", "events", "versions", "memories", "thoughts"):
             conn.execute(f"DELETE FROM {table}")
+        # Reset the id sequences too, so a rebuilt store does not have thought ids
+        # starting in the hundreds on a fresh instance.
+        conn.execute("DELETE FROM sqlite_sequence WHERE name IN"
+                     " ('exposures','events','thoughts')")
         conn.commit()
         stats["rebuilt"] = True
 
@@ -363,17 +367,22 @@ def backfill_events(conn, sessions_root: Path):
 
 
 def _epoch(stamp):
+    """Session transcripts carry either an ISO string or a numeric epoch, and the
+    numeric form is sometimes milliseconds. Reading a millisecond value as seconds
+    produced timestamps in the year 58,000, which crashed the log renderer."""
     if not stamp:
         return None
     if isinstance(stamp, (int, float)):
-        return int(stamp)
-    s = str(stamp).replace("Z", "+00:00")
-    for fmt in (None, "%Y-%m-%dT%H:%M:%S.%f%z"):
-        try:
-            return int(datetime.fromisoformat(s).timestamp())
-        except (ValueError, TypeError):
-            continue
-    return None
+        v = int(stamp)
+        return v // 1000 if v > 100_000_000_000 else v
+    s = str(stamp).strip()
+    if s.isdigit():
+        v = int(s)
+        return v // 1000 if v > 100_000_000_000 else v
+    try:
+        return int(datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp())
+    except (ValueError, TypeError):
+        return None
 
 
 if __name__ == "__main__":

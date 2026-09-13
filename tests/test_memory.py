@@ -66,6 +66,47 @@ class TestIds(Base):
             r = memlib.graduate(self.conn, f"more {i}")
             self.assertNotEqual(r["id"], victim)
 
+    def test_ids_are_not_sequential(self):
+        """Enumerated ids (m000, m001, ...) are guessable, and an invented handle
+        that hits a real memory casts a vote for it — the exact failure recall is
+        meant to surface."""
+        ids = [memlib.graduate(self.conn, f"fact {i}")["id"] for i in range(25)]
+        numeric = [i for i in ids if i[1:].isdigit()]
+        self.assertLess(len(numeric), 5, f"ids look sequential: {ids[:8]}")
+
+
+class TestDiscard(Base):
+    def test_discards_a_thought_without_creating_a_memory(self):
+        """There was no path for this in the first version, so a thought whose
+        disposition was 'drop' could not be recorded at all."""
+        memlib.remember(self.conn, "one-off trivia")
+        tid = self.conn.execute("SELECT id FROM thoughts").fetchone()["id"]
+        before = self.conn.execute("SELECT COUNT(*) c FROM memories").fetchone()["c"]
+        r = memlib.discard(self.conn, [tid], reason="trivia")
+        self.assertTrue(r["ok"])
+        row = self.conn.execute("SELECT * FROM thoughts WHERE id = ?", (tid,)).fetchone()
+        self.assertEqual(row["state"], "done")
+        self.assertEqual(row["disposition"], "drop")
+        after = self.conn.execute("SELECT COUNT(*) c FROM memories").fetchone()["c"]
+        self.assertEqual(before, after)
+
+    def test_the_thought_and_its_archive_survive(self):
+        memlib.remember(self.conn, "still here afterwards")
+        tid = self.conn.execute("SELECT id FROM thoughts").fetchone()["id"]
+        memlib.discard(self.conn, [tid])
+        row = self.conn.execute("SELECT text FROM thoughts WHERE id = ?", (tid,)).fetchone()
+        self.assertIn("still here", row["text"])
+
+    def test_reports_an_unknown_thought(self):
+        self.assertFalse(memlib.discard(self.conn, [999])["ok"])
+
+    def test_accepts_several_at_once(self):
+        for i in range(3):
+            memlib.remember(self.conn, f"trivia {i}")
+        tids = [r["id"] for r in self.conn.execute("SELECT id FROM thoughts")]
+        r = memlib.discard(self.conn, tids)
+        self.assertEqual(sorted(r["discarded"]), sorted(tids))
+
 
 class TestGraduate(Base):
     def test_always_enters_at_l1(self):
@@ -300,6 +341,18 @@ class TestVerify(Base):
         self.conn.execute("UPDATE thoughts SET state = 'done'")
         self.conn.commit()
         self.assertTrue(any("no disposition" in p for p in memlib.verify(self.conn)))
+
+
+class TestLongEntryBudget(Base):
+    def test_a_verbose_graduation_shows_up_in_occupancy(self):
+        """A validation run graduated six entries averaging well over the ~50-word
+        guide and pushed the store over budget in one night. The budget has to
+        reflect that immediately, so the next pass knows to squeeze."""
+        for i in range(6):
+            memlib.graduate(self.conn, "word " * 800 + str(i))
+        occ = memlib.occupancy(self.conn)
+        self.assertTrue(occ["over_total"])
+        self.assertEqual(occ["next_to_squeeze"], 1)
 
 
 class TestRemember(Base):

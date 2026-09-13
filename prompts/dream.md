@@ -18,12 +18,17 @@ Never open the database, never write a file, never touch the legacy directory at
 memory status                 what the store looks like now
 memory thoughts               the raw observations waiting for you
 memory show <id>              every version of one memory, and its history
-memory graduate/reinforce/correct/drop
+memory graduate/reinforce/correct   disposition a thought into a memory
+memory discard --thought N    drop a thought without creating a memory
 memory compress/merge/promote
 memory budget                 occupancy against the budget
 memory verify                 the invariants
 memory log                    what you did on previous nights
 ```
+
+Note the vocabulary, because it is the one place it is worth being precise:
+**thoughts are discarded, memories are dropped.** A thought you decline to keep
+never becomes a memory, so there is nothing to drop.
 
 Run `memory status` first. Read `{{over_budget}}` for whether decay is even in
 scope — the CLI prints it, and if the store fits its {{total_tokens}}-token
@@ -52,9 +57,20 @@ the command, the path, the number, the reason behind the preference. Tighten the
 narration, but do not strip the substance, do not pad it, and do not add lessons
 of your own. If detail is not in a recorded thought, it does not exist.
 
-Be generous here. A memory that turns out to be noise costs a few lines and will
-compress itself away under budget pressure, whereas a thought you decline to
-graduate loses its detail permanently.
+Length is part of the judgement, not an afterthought. Every entry is injected
+into every future session, so a long entry is a permanent tax on every
+conversation. Aim for **about 50 words at full resolution** — enough for the
+command, the path and the reason, and no more. If a thought needs more than that,
+it is usually two facts, and only one of them belongs here.
+
+Write for recognition as well as for detail. A future agent is scanning a list,
+so lead with the nouns that would make it stop: the tool name, the path, the
+error, the person. Bury the anatomy of what you did at the time.
+
+Be generous about *admitting* a thought — a memory that turns out to be noise
+costs a few lines and will compress itself away under pressure, whereas a thought
+you decline to graduate loses its detail permanently. Be ruthless about *length*,
+which is the thing that actually costs something.
 
 Prefer the general form over the anecdote. An observation about one file is
 usually really an observation about a recurring task: write the rule, attach the
@@ -78,12 +94,15 @@ resets the entry to full resolution.
 version was worth knowing, keep one clause saying what changed: a reversal is
 worth knowing.
 
-**Drop** — transient task state, one-off trivia, a fact about a file that no
-longer exists, or a restatement of something already covered. Dropping is cheap:
-the thought and every version stay in the archive, so nothing is destroyed.
-Dropped means dropped — do not smuggle its content into another entry.
+**Discard** — transient task state, one-off trivia, a fact about a file that no
+longer exists, or a restatement of something already covered. Use
+`memory discard --thought N`, which marks the thought done without creating a
+memory. Nothing is destroyed: the thought and every version of anything it did
+become stay in the archive, so discarding is cheap and reversible in principle.
+Discarded means discarded — do not smuggle its content into another entry.
 
-Always pass the thought id, so the record shows what each thought became.
+Always pass the thought id to whichever verb you use, so the record shows what
+each thought became.
 
 ## Decay, only under pressure
 
@@ -93,8 +112,23 @@ If `memory status` says the store is over budget, then, in this order:
    should become one better-stated entry with their evidence summed. This
    recovers the most space for the least loss.
 2. **Compress** by one level, weakest ↺ first, oldest observation breaking ties.
-   Compress the tier furthest above its target share first — the CLI tells you
-   which.
+   Compress the tier furthest above its target share first — `memory status` tells
+   you which.
+
+The levels, as a guide for your judgement rather than a limit:
+
+```
+L1  full      ~50 words.  Tests run only through ./dev test — the wrapper builds
+L2  gist      ~15 words.  Tests run through ./dev test, not pytest.
+L3  keywords   ~8 words.  ./dev test not pytest; docker env; DB fixture
+L4  gone      (drop it; the thought and sidecar records remain)
+```
+
+**L3 is written to be recognised, not read.** Bias it toward keyword shape rather
+than a grammatical sentence — `pnpm not yarn; workspace protocol; migrated July`
+beats *"the project uses pnpm rather than yarn"*. Its only job is to make an
+agent think "that's relevant, expand it". Keep the nouns; drop the connective
+tissue, the reasoning and the numbers, which come back on recall.
 
 Nine times in ten there is nothing to do here. The store fits, and the correct
 decay pass is no pass at all.

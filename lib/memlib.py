@@ -152,15 +152,20 @@ ALPHABET = "0123456789abcdefghijklmnopqrstuvwxyz"
 
 def new_id(conn: sqlite3.Connection, length: int = 3) -> str:
     """A permanent, never-reused handle. Agents pass these back to `recall`, so a
-    renumbering or a reuse silently misattributes use."""
+    renumbering or a reuse silently misattributes use.
+
+    Random, not sequential. The first version enumerated the alphabet, which
+    produced m000, m001, ... — valid but guessable, and an invented handle that
+    happens to hit a real memory casts a vote for it. That is the exact failure
+    `recall` is supposed to surface, so the ids should not be predictable.
+    """
     existing = {r["id"] for r in conn.execute("SELECT id FROM memories")}
-    import itertools
-    while True:
-        for combo in itertools.product(ALPHABET, repeat=length):
-            cand = "m" + "".join(combo)
-            if cand not in existing:
-                return cand
-        length += 1
+    import secrets
+    for _ in range(200):
+        cand = "m" + "".join(secrets.choice(ALPHABET) for _ in range(length))
+        if cand not in existing:
+            return cand
+    return new_id(conn, length + 1)
 
 
 def valid_id(mid: str) -> bool:
@@ -507,6 +512,41 @@ def recall(conn, mid, session_id=None, actor="live"):
 def _next_position(conn):
     row = conn.execute("SELECT COALESCE(MAX(position), -1) p FROM memories").fetchone()
     return row["p"] + 1
+
+
+def discard(conn, thought_ids, reason=None, actor="dream"):
+    """Disposition thoughts that are not worth keeping, without creating a memory.
+
+    This exists because the first version had no such path: `drop` acts on a
+    memory, so a thought whose disposition was "drop" could not be recorded at
+    all. The consolidation pass spent much of a validation run trying to work out
+    what to call, which is the cost of a missing verb being paid in tokens. A
+    thought is discarded; a memory is dropped.
+    """
+    if isinstance(thought_ids, (int, str)):
+        thought_ids = [thought_ids]
+    done, missing, already = [], [], []
+    for tid in thought_ids:
+        try:
+            tid = int(tid)
+        except (TypeError, ValueError):
+            missing.append(tid)
+            continue
+        row = conn.execute("SELECT * FROM thoughts WHERE id = ?", (tid,)).fetchone()
+        if row is None:
+            missing.append(tid)
+            continue
+        if row["state"] == "done":
+            already.append(tid)
+            continue
+        conn.execute("UPDATE thoughts SET state = 'done', disposition = 'drop',"
+                     " processed_at = ? WHERE id = ?", (now_ts(), tid))
+        _event(conn, "discard", None, {"thought": tid, "reason": reason}, actor=actor)
+        done.append(tid)
+    conn.commit()
+    if missing:
+        return {"ok": False, "error": "unknown_thought", "unknown": missing, "discarded": done}
+    return {"ok": True, "discarded": done, "already": already}
 
 
 def graduate(conn, text, source=None, actor="dream", memory_id=None, ts=None, noted=None,

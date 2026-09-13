@@ -207,8 +207,15 @@ def cmd_log(conn, args):
         emit({"ok": True, "events": [dict(r) for r in rows]}, True)
         return
     from datetime import datetime
+
+    def _stamp(ts):
+        try:
+            return datetime.fromtimestamp(ts).strftime("%d/%m %H:%M")
+        except (ValueError, OSError, OverflowError):
+            return f"bad-ts({ts})"
+
     for r in rows:
-        when = datetime.fromtimestamp(r["ts"]).strftime("%d/%m %H:%M")
+        when = _stamp(r["ts"])
         detail = f"  {r['detail']}" if r["detail"] else ""
         print(f"{when}  {r['actor']:5s} {r['verb']:10s} [{r['memory_id'] or '-'}]{detail}")
 
@@ -280,6 +287,11 @@ def cmd_recall(conn, args):
         emit(r, args.json, f"{args.id} already counted this session.")
         return
     emit(r, args.json, r["text"])
+
+
+def cmd_discard(conn, args):
+    ids = [x.strip() for x in str(args.thought).split(",") if x.strip()]
+    emit(memlib.discard(conn, ids, reason=args.reason, actor=args.actor), args.json)
 
 
 def cmd_graduate(conn, args):
@@ -423,6 +435,12 @@ def build_parser():
     s.add_argument("--survivor", required=True)
     s.add_argument("--absorbed", required=True, help="comma-separated ids")
     s.add_argument("--text", help="a better-stated combined entry")
+    s.add_argument("--actor", default="dream")
+
+    s = add("discard", cmd_discard,
+            "drop a raw observation without creating a memory (thoughts, not memories)")
+    s.add_argument("--thought", required=True, help="thought id, or several comma-separated")
+    s.add_argument("--reason")
     s.add_argument("--actor", default="dream")
 
     s = add("promote", cmd_promote, "make permanent. Earned at 50, or stipulated")
