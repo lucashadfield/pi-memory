@@ -442,20 +442,91 @@ class TestToolDefinitions(Base):
         self.assertTrue(any("tools.json" in p for p in problems), problems)
 
 
-class TestExtensionLoads(Base):
-    """The extension is the one component whose failure is invisible from here:
-    a syntax error or a bad import takes the memory system down in every new
-    session while the CLI, the store and every test above carry on passing. It
-    happened once during development and nothing caught it."""
+class TestExtensionSyntax(Base):
+    """The extension is the one component whose failure is invisible from here: a
+    syntax error takes the memory system down in every new session while the CLI,
+    the store and every other test carry on passing. That happened once during
+    development and nothing caught it.
 
-    def test_extension_parses_and_registers_its_tools(self):
-        import json as _json
+    This parses the TypeScript without resolving imports, so it runs wherever node
+    exists — including a fresh clone with no dependencies installed.
+    """
+
+    def test_extension_has_no_syntax_errors(self):
+        import os
         import shutil
         import subprocess
 
         node = shutil.which("node")
         if not node:
             self.skipTest("node not available")
+        entry = memlib.REPO_DIR / "extensions" / "pi-memory" / "index.ts"
+        script = (
+            "const { stripTypeScriptTypes } = require('node:module');\n"
+            "const fs = require('node:fs');\n"
+            "const src = fs.readFileSync(process.env.TS_FILE, 'utf8');\n"
+            "stripTypeScriptTypes(src);\n"
+            "console.log('parsed');\n"
+        )
+        proc = subprocess.run(
+            [node, "-e", script],
+            capture_output=True, text=True, timeout=60,
+            cwd=str(entry.parent),
+            env={**os.environ, "TS_FILE": str(entry)},
+        )
+        self.assertEqual(proc.returncode, 0, f"{proc.stdout}\n{proc.stderr}")
+        self.assertIn("parsed", proc.stdout)
+
+
+def _node_deps_available(entry_dir):
+    """Whether the extension's imports resolve here. In a fresh clone they do not:
+    node_modules is a symlink to pi's own modules, and it is gitignored because the
+    dependencies belong to the pi installation rather than to this repository.
+
+    Only typebox is checked, because it is the extension's only runtime import.
+    @earendil-works/pi-coding-agent is imported as a type and erased before
+    execution, so requiring it to resolve would skip these tests in an environment
+    where the extension demonstrably works.
+    """
+    import shutil
+    import subprocess
+
+    node = shutil.which("node")
+    if not node:
+        return False, "node not available"
+    script = (
+        "try { require.resolve('typebox'); } catch (e) {"
+        " console.error('typebox unresolved'); process.exit(1); }\n"
+        "console.log('resolved');\n"
+    )
+    proc = subprocess.run([node, "-e", script], capture_output=True, text=True,
+                          timeout=60, cwd=str(entry_dir))
+    if proc.returncode != 0:
+        return False, f"pi's modules are not installed here ({proc.stderr.strip()[:60]})"
+    return True, ""
+
+
+class TestExtensionLoads(Base):
+    """The deeper check: actually import the module and confirm both tools
+    register. Needs pi installed, so it skips rather than fails in a clone."""
+
+    @classmethod
+    def setUpClass(cls):
+        entry = memlib.REPO_DIR / "extensions" / "pi-memory" / "index.ts"
+        ok, why = _node_deps_available(entry.parent)
+        cls._available, cls._why = ok, why
+
+    def setUp(self):
+        if not self._available:
+            self.skipTest(self._why)
+        super().setUp()
+
+    def test_extension_registers_its_tools(self):
+        import json as _json
+        import shutil
+        import subprocess
+
+        node = shutil.which("node")
         entry = memlib.REPO_DIR / "extensions" / "pi-memory" / "index.ts"
         script = (
             "const tools = {};\n"
@@ -482,8 +553,6 @@ class TestExtensionLoads(Base):
         import subprocess
 
         node = shutil.which("node")
-        if not node:
-            self.skipTest("node not available")
         entry = memlib.REPO_DIR / "extensions" / "pi-memory" / "index.ts"
         script = (
             "const tools = {};\n"

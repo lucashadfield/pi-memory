@@ -2,13 +2,22 @@
   "name": "pi-memory",
   "version": "0.1.0",
   "description": "A durable memory store for pi agents: capture raw observations, consolidate them nightly, inject the result into every session. SQLite-backed, with the invariants enforced in code rather than in a prompt.",
+  "license": "MIT",
+  "author": "Lucas Hadfield",
+  "homepage": "https://github.com/lucashadfield/pi-memory#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lucashadfield/pi-memory.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lucashadfield/pi-memory/issues"
+  },
   "keywords": [
     "pi-package",
     "memory",
     "pi",
     "agent"
   ],
-  "license": "MIT",
   "pi": {
     "extensions": [
       "extensions"
@@ -28,6 +37,5 @@
   },
   "engines": {
     "node": ">=22.5.0"
-  },
-  "type": "module"
+  }
 }

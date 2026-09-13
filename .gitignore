@@ -13,7 +13,8 @@
 
 # local dev only
 node_modules
-package-lock.json
+# package-lock.json IS committed for paseo-plugin, so a plugin
+# install resolves the same dependency versions for everyone.
 
 # run artefacts
 /logs/

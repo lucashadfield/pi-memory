@@ -92,9 +92,9 @@ PROMPT='Run `memory dream` and follow the instructions it prints.'
 if [ -n "$MAKE_SCHEDULE" ]; then
   command -v paseo >/dev/null || die "paseo is required for --schedule"
   paseo schedule create "$PROMPT" \
-    --name dream --cron '0 3 * * *' --timezone "${TZ_NAME:-Australia/Sydney}" \
+    --name dream --cron '0 3 * * *' --timezone "${TZ_NAME:-UTC}" \
     --provider pi --cwd "$REPO" 2>&1 | tail -3
-  ok "nightly schedule created"
+  ok "nightly schedule created (timezone ${TZ_NAME:-UTC}; set TZ_NAME to change it)"
 else
   say "to schedule the nightly consolidation, run:"
   echo
