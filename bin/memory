@@ -234,6 +234,75 @@ def cmd_thoughts(conn, args):
         print()
 
 
+def cmd_view(conn, args):
+    """Everything a viewer needs, in one call.
+
+    Read-only in the strong sense: it must never affect the evidence. `render` is
+    called without a session id precisely so that no exposure rows are written — a
+    viewer that recorded exposures would corrupt the recall-rate measurement it is
+    there to display.
+    """
+    headline = memlib.headline(conn)
+    occ = memlib.occupancy(conn)
+    block, _ids, tokens = memlib.render(conn, session_id=None)
+
+    memories = []
+    for r in conn.execute("SELECT * FROM memories ORDER BY state = 'active' DESC,"
+                          " position ASC, id ASC"):
+        versions = [
+            {"level": v["level"], "text": v["text"], "ts": v["ts"],
+             "author": v["author"], "noted": v["noted"]}
+            for v in conn.execute(
+                "SELECT level, text, ts, author, noted FROM versions WHERE memory_id = ?"
+                " ORDER BY level ASC, ts ASC", (r["id"],))
+        ]
+        kept = memlib.version_at_level(conn, r["id"], r["level"])
+        memories.append({
+            "id": r["id"], "state": r["state"], "level": r["level"],
+            "uses": r["uses"], "core": bool(r["core"]), "noted": r["noted"],
+            "last_recalled": r["last_recalled"], "position": r["position"],
+            "first_seen": r["first_seen"], "merged_into": r["merged_into"],
+            "injected_chars": len(kept["text"]) if kept else 0,
+            "versions": versions,
+        })
+
+    thoughts = [dict(t) for t in memlib.pending_thoughts(conn, state="pending")]
+    events = [dict(e) for e in conn.execute(
+        "SELECT ts, actor, verb, memory_id, session_id, detail FROM events"
+        " ORDER BY id DESC LIMIT ?", (args.events,))]
+    failures = [dict(e) for e in conn.execute(
+        "SELECT ts, actor, verb, memory_id, session_id, detail FROM events"
+        " WHERE verb IN ('recall_missing','recall_duplicate') ORDER BY id DESC LIMIT 20")]
+
+    payload = {
+        "ok": True,
+        "instance": {"dir": str(memlib.instance_dir()), "db": str(memlib.db_path())},
+        "headline": headline,
+        "occupancy": occ,
+        "rendered": {"block": block, "tokens": tokens,
+                     "preamble_chars": len(block) - sum(m["injected_chars"] for m in memories
+                                                        if m["state"] == "active")},
+        "memories": memories,
+        "thoughts": thoughts,
+        "events": events,
+        "recall_failures": failures,
+    }
+    if args.json:
+        print(json.dumps(payload, ensure_ascii=False))
+        return
+    h = headline
+    print(f"{h['entries']} entries ({h['core']} core, {h['dropped']} dropped, {h['merged']} merged)")
+    print(f"decayable {h['decayable_tokens']}/{h['total_tokens']} tok"
+          f"{'  OVER' if h['over_total'] else ''}")
+    print(f"core      {h['core_tokens']}/{h['core_cap_tokens']} tok"
+          f"{'  OVER' if h['core_over'] else ''}")
+    for lv in (1, 2, 3):
+        o = occ["levels"][lv]
+        print(f"  L{lv}      {o['entries']:2d} entries  {o['tokens']:5d}/{o['target_tokens']} tok")
+    print(f"pending   {h['pending_thoughts']} thoughts")
+    print(f"rendered  {tokens} tok injected per session")
+
+
 def cmd_export(conn, args):
     print(json.dumps(memlib.export(conn), ensure_ascii=False, indent=2))
 
@@ -379,6 +448,9 @@ def build_parser():
     s.add_argument("--limit", type=int, default=50)
 
     add("export", cmd_export, "the whole store as JSON (analytics seam)")
+
+    s = add("view", cmd_view, "everything a viewer needs, in one read-only call")
+    s.add_argument("--events", type=int, default=60)
 
     s = add("thoughts", cmd_thoughts, "raw observations awaiting a dream")
     s.add_argument("--state", default="pending", choices=["pending", "done", "all"])

@@ -107,6 +107,35 @@ Exit codes are stable so callers never match on message text: `0` ok, `2` usage,
 `3` unknown id, `4` refused by an invariant, `5` busy. With `--json` every verb
 prints an object with an `ok` field.
 
+## The viewer
+
+`paseo-plugin/` is a Paseo plugin that puts the whole store in a window inside
+the app, rather than in a browser tab or a terminal. It is a pure reader: it
+renders what one `memory view` call returns, so the panel cannot disagree with
+`memory status`, and it records no exposure and casts no vote, because a viewer
+that moved the recall rate would corrupt the measurement it exists to display.
+
+```bash
+cd paseo-plugin && npm install          # dependencies for the plugin bundler
+paseo plugin install ~/pi-memory/paseo-plugin
+```
+
+Then look for **Memory** in the sidebar. Three tabs:
+
+- **Memories** — every entry with its id, level, evidence count and injected
+  size. Expand one to walk its compression ladder: the chips show which levels
+  actually exist (and how many historical records sit at each), and the header
+  marks whether the level you are looking at is the one being injected.
+  A **level lens** at the top re-renders the whole list at L1, L2 or L3, which is
+  the fastest way to judge whether compression is losing something that matters.
+  Forgotten entries are hidden behind a toggle.
+- **Thoughts** — the raw observations no dream has dispositioned yet, with their
+  project and timestamp, which is what tomorrow's consolidation will work from.
+- **Prompt** — the exact text appended to the system prompt, verbatim, selectable.
+
+The plugin is not part of the pi package manifest in `package.json`, so pi will
+not try to load it; Paseo discovers it from its own config.
+
 ## Where things live
 
 ```
@@ -127,7 +156,6 @@ single SQLite file: back it up by copying it.
 | `live_memories` | a view — the only definition of "a memory that exists" |
 
 ## Analysis
-
 ```bash
 python3 analytics/mine.py             # capture, recall, utility, occupancy
 python3 analytics/mine.py --snapshot  # one-line record for the trend
